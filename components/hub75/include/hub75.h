@@ -43,7 +43,7 @@ extern "C" {
 
 /* The six colour data pins, so a caller can name them when diagnosing wiring.
  * These mirror the PIN_* defines in hub75.c and must be changed with them. */
-#define PIN_CHECK_R1 4
+#define PIN_CHECK_R1 8
 #define PIN_CHECK_G1 9
 #define PIN_CHECK_B1 5
 #define PIN_CHECK_R2 6

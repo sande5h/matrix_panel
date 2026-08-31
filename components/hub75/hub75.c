@@ -21,7 +21,7 @@ static const char *TAG = "hub75";
 /* Every HUB75 signal is one lane of the 16 bit i80 bus except CLK, which is
  * the bus's own WR strobe. The BIT_* value is the lane index, i.e. bit n of
  * each 16 bit word drives data_gpio_nums[n]. */
-#define PIN_R1  4
+#define PIN_R1  8   /* was GPIO 4, damaged on the N16R8 module */
 #define PIN_G1  9
 #define PIN_B1  5
 #define PIN_R2  6
