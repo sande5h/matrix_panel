@@ -1,4 +1,5 @@
 #include <math.h>
+#include <stdio.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -43,34 +44,36 @@ static void draw_plasma(float t)
     }
 }
 
-/* Lights one colour in one half of the panel at a time. Each half is fed by
- * its own set of HUB75 data lines, so a channel that stays dark names the wire
- * to check: the top half is R1/G1/B1, the bottom half R2/G2/B2. */
-static void draw_channel_test(void)
+typedef void (*pattern_fn)(void);
+
+/* Periodic heartbeat while a pattern is on screen: if frames stops climbing,
+ * the DMA has stalled and nothing on the panel means anything. */
+static void hold(const char *what, int ms, pattern_fn redraw)
 {
-    const struct { uint8_t r, g, b; const char *colour; } chans[] = {
-        {255, 0, 0, "R"}, {0, 255, 0, "G"}, {0, 0, 255, "B"},
-    };
-    for (int half = 0; half < 2; half++) {
-        int y0 = half ? HUB75_ROWS : 0;
-        int y1 = half ? HUB75_HEIGHT : HUB75_ROWS;
-        for (int c = 0; c < 3; c++) {
-            ESP_LOGI(TAG, "expect %s half all %s  (signal %s%d, GPIO check)",
-                     half ? "bottom" : "top", chans[c].colour,
-                     chans[c].colour, half ? 2 : 1);
-            hub75_clear();
-            for (int y = y0; y < y1; y++) {
-                for (int x = 0; x < HUB75_WIDTH; x++) {
-                    hub75_set_pixel(x, y, chans[c].r, chans[c].g, chans[c].b);
-                }
-            }
-            vTaskDelay(pdMS_TO_TICKS(1200));
+    int64_t t_end = esp_timer_get_time() + ms * 1000LL;
+    while (esp_timer_get_time() < t_end) {
+        if (redraw) redraw();
+        ESP_LOGI(TAG, "  %-22s frames=%lu  %.0f Hz", what,
+                 (unsigned long)hub75_frame_count(), hub75_refresh_hz());
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+static uint8_t s_pat_r, s_pat_g, s_pat_b;
+static int s_pat_y0, s_pat_y1;
+
+static void draw_half(void)
+{
+    hub75_clear();
+    for (int y = s_pat_y0; y < s_pat_y1; y++) {
+        for (int x = 0; x < HUB75_WIDTH; x++) {
+            hub75_set_pixel(x, y, s_pat_r, s_pat_g, s_pat_b);
         }
     }
+}
 
-    /* A one pixel border plus corner marks: any horizontal shift shows up as
-     * the left or right edge landing in the wrong column. */
-    ESP_LOGI(TAG, "expect a 1px white border touching all four edges");
+static void draw_border(void)
+{
     hub75_clear();
     for (int x = 0; x < HUB75_WIDTH; x++) {
         hub75_set_pixel(x, 0, 255, 255, 255);
@@ -80,7 +83,55 @@ static void draw_channel_test(void)
         hub75_set_pixel(0, y, 255, 255, 255);
         hub75_set_pixel(HUB75_WIDTH - 1, y, 255, 255, 255);
     }
-    vTaskDelay(pdMS_TO_TICKS(3000));
+}
+
+/* Does a frame drawn once survive, or does it only show while it is being
+ * redrawn? The plasma redraws every 20 ms and is visible; the old one-shot
+ * test frames were not, so this tells the two apart directly. */
+static void draw_persistence_test(void)
+{
+    s_pat_r = s_pat_g = s_pat_b = 255;
+    s_pat_y0 = 0;
+    s_pat_y1 = HUB75_HEIGHT;
+
+    ESP_LOGI(TAG, "A: full white, drawn ONCE -- expect white for 3 s");
+    draw_half();
+    hold("static", 3000, NULL);
+
+    ESP_LOGI(TAG, "B: full white, REDRAWN every 100 ms -- expect white for 3 s");
+    hold("redrawn", 3000, draw_half);
+
+    hub75_clear();
+    ESP_LOGI(TAG, "C: cleared, drawn ONCE -- expect black for 2 s");
+    hold("cleared", 2000, NULL);
+}
+
+/* Lights one colour in one half of the panel at a time. Each half is fed by
+ * its own set of HUB75 data lines, so a channel that stays dark names the wire
+ * to check: the top half is R1/G1/B1, the bottom half R2/G2/B2. */
+static void draw_channel_test(void)
+{
+    const struct { uint8_t r, g, b; const char *colour; } chans[] = {
+        {255, 0, 0, "R"}, {0, 255, 0, "G"}, {0, 0, 255, "B"},
+    };
+    for (int half = 0; half < 2; half++) {
+        s_pat_y0 = half ? HUB75_ROWS : 0;
+        s_pat_y1 = half ? HUB75_HEIGHT : HUB75_ROWS;
+        for (int c = 0; c < 3; c++) {
+            s_pat_r = chans[c].r;
+            s_pat_g = chans[c].g;
+            s_pat_b = chans[c].b;
+            char what[32];
+            snprintf(what, sizeof(what), "%s half %s (%s%d)",
+                     half ? "bottom" : "top", chans[c].colour,
+                     chans[c].colour, half ? 2 : 1);
+            ESP_LOGI(TAG, "expect %s", what);
+            hold(what, 1500, draw_half);
+        }
+    }
+
+    ESP_LOGI(TAG, "expect a 1px white border touching all four edges");
+    hold("border", 3000, draw_border);
     hub75_clear();
 }
 
@@ -89,6 +140,7 @@ void app_main(void)
     ESP_ERROR_CHECK(hub75_init());
     ESP_ERROR_CHECK(hub75_start());
 
+    draw_persistence_test();
     draw_channel_test();
 
     int64_t t0 = esp_timer_get_time();

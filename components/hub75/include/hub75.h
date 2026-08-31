@@ -59,6 +59,10 @@ uint8_t hub75_get_brightness(void);
  * Returns 0 on the first call. */
 float hub75_refresh_hz(void);
 
+/* Total frames pushed to the panel since hub75_start(). If this is not
+ * climbing, the DMA is not running. */
+uint32_t hub75_frame_count(void);
+
 #ifdef __cplusplus
 }
 #endif

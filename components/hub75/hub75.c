@@ -331,6 +331,11 @@ uint8_t hub75_get_brightness(void)
     return s_brightness;
 }
 
+uint32_t hub75_frame_count(void)
+{
+    return s_frames;
+}
+
 float hub75_refresh_hz(void)
 {
     static int64_t last_us;
