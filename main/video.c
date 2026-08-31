@@ -121,6 +121,7 @@ static bool play_mjpeg(const esp_partition_t *part, const video_header_t *hdr)
 
     size_t off = HEADER_BYTES + index_bytes;
     int64_t next = esp_timer_get_time();
+    int64_t mark = next;
 
     for (uint32_t i = 0; i < hdr->frames; i++) {
         if (esp_partition_read(part, off, jpeg, sizes[i]) != ESP_OK) {
@@ -137,6 +138,18 @@ static bool play_mjpeg(const esp_partition_t *part, const video_header_t *hdr)
             ESP_LOGW(TAG, "frame %lu did not decode (tjpgd %d)", (unsigned long)i, res);
         } else {
             hub75_blit_rgb565(frame);
+        }
+
+        /* Periodic heartbeat: the achieved rate, whether or not it is keeping
+         * up. A late frame does not corrupt anything, it just slows playback,
+         * so without this the difference is invisible. */
+        if ((i % 128) == 127) {
+            int64_t now = esp_timer_get_time();
+            ESP_LOGI(TAG, "frame %lu/%lu, %.1f fps achieved (%u target), "
+                          "%lld us slack",
+                     (unsigned long)i, (unsigned long)hdr->frames,
+                     128.0e6f / (float)(now - mark), hdr->fps, (long long)(next - now));
+            mark = now;
         }
 
         next += period_us;
