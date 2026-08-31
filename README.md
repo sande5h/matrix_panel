@@ -116,6 +116,53 @@ which is roughly a minute. Longer than that wants an SD card or a codec.
 `hub75_blit_rgb565()`, which walks each (row, plane) block once rather than
 doing six read-modify-writes per pixel.
 
+## Control API
+
+The panel serves a small API on **8088**, and answers to `matrix-panel.local`
+over mDNS so a DHCP change does not break anything pointing at it.
+
+| endpoint | does |
+|---|---|
+| `GET /` | status page with buttons |
+| `GET /status` | current screen, IP, uptime and the last quota reading, as JSON |
+| `GET`/`POST /toggle` | advance to the next screen |
+| `GET /screen?s=clock\|usage\|video` | select one directly |
+
+Three screens: **clock** (minute sweep, date, time, quota bars), **usage** (the
+five hour window large, the seven day window as a bar) and **video** (the clip
+in the video partition). Video playback checks the current screen once per
+frame, so switching away interrupts a clip instead of waiting for it to end.
+
+Every endpoint returns the same JSON, so the web page and the menu bar item
+can never disagree about what is on screen.
+
+### Menu bar item
+
+`tools/matrix_panel.lua` is a Hammerspoon module: left click toggles, the
+dropdown selects a screen directly, and the icon shows what is playing
+(🕒 clock, 📊 usage, 🎞 video, ▪️ unreachable). Install it with:
+
+```
+cp tools/matrix_panel.lua ~/.hammerspoon/
+# then add to ~/.hammerspoon/init.lua:
+#   pcall(require, "matrix_panel")
+```
+
+It polls `/status` every 30 s, so the icon tracks changes made from the web
+page or after a panel reboot.
+
+## Claude quota
+
+The two bars come from the `ccusage_server.py` that already serves the
+`claude_usage_c3` trinket: it reads Claude Code's OAuth token and calls
+`api.anthropic.com/api/oauth/usage`, caching for 60 s. The panel is just a
+second client of that server, so the token never leaves the PC and the panel
+only ever sees percentages.
+
+Point `USAGE_URL` in `main/secrets.h` at whichever address of the PC shares a
+subnet with the panel. Without the server running the clock still works and the
+quota rows stay blank.
+
 ## Build
 
 ```
