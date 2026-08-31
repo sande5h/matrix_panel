@@ -13,6 +13,10 @@ void gfx_text(int x, int y, const char *s, int scale, uint8_t r, uint8_t g, uint
 /* Width in pixels the string will occupy, for centring and right-alignment. */
 int gfx_text_width(const char *s, int scale);
 
+/* How far the pen moves after drawing c, gap included. Needed to find a
+ * glyph's position inside an already drawn string. */
+int gfx_char_advance(char c, int scale);
+
 /* Draws centred on the panel's width. */
 void gfx_text_center(int y, const char *s, int scale, uint8_t r, uint8_t g, uint8_t b);
 

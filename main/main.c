@@ -45,13 +45,21 @@ static void draw_clock(void)
     char date[16], hhmm[8];
     snprintf(date, sizeof(date), "%s %02d %s",
              DAYS[tm.tm_wday % 7], tm.tm_mday, MONTHS[tm.tm_mon % 12]);
-    snprintf(hhmm, sizeof(hhmm), "%02d%c%02d",
-             tm.tm_hour, (tm.tm_sec & 1) ? ' ' : ':', tm.tm_min);
+    snprintf(hhmm, sizeof(hhmm), "%02d:%02d", tm.tm_hour, tm.tm_min);
 
     hub75_clear();
     gfx_seconds_sweep(tm.tm_sec);
     gfx_text_center(5,  date, 1, 0, 140, 170);
-    gfx_text_center(19, hhmm, 3, 255, 170, 40);
+    /* Drawn with the colon always present and blanked on odd seconds, rather
+     * than swapping in a space: digits and the colon hold a fixed cell so the
+     * minutes stay put, but a space does not, and swapping would shove them
+     * sideways once a second. */
+    int hhmm_x = (HUB75_WIDTH - gfx_text_width(hhmm, 3)) / 2;
+    gfx_text(hhmm_x, 19, hhmm, 3, 255, 170, 40);
+    if (tm.tm_sec & 1) {
+        int colon_x = hhmm_x + 2 * gfx_char_advance('0', 3);
+        gfx_fill_rect(colon_x, 19, 5 * 3, 7 * 3, 0, 0, 0);
+    }
 
     /* Whatever is playing, in the gap between the time and the quota bars.
      * Nothing playing leaves the row empty rather than reserving space for it. */

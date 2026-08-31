@@ -2,42 +2,103 @@
 #include <string.h>
 
 #include "hub75.h"
+#include <stdbool.h>
 #include "gfx.h"
 #include "font5x7.h"
 
 
-void gfx_char(int x, int y, char c, int scale, uint8_t r, uint8_t g, uint8_t b)
+/* The font is drawn in fixed 5 column cells, but most glyphs do not fill
+ * them: 'I' inks 3 columns, ':' and apostrophe just 1. Advancing by the cell
+ * therefore leaves a ragged three or four pixel hole after a narrow letter
+ * while wide ones sit tight, which is what reads as uneven word spacing.
+ * Advancing by the ink instead keeps the gap between letters constant.
+ *
+ * Digits and the colon are the exception and keep the full cell: a clock whose
+ * glyphs changed width would shift sideways every time a 1 became a 2. */
+static bool fixed_width(char c)
+{
+    return (c >= '0' && c <= '9') || c == ':';
+}
+
+static void glyph_ink(const uint8_t *glyph, int *first, int *width)
+{
+    int lo = -1, hi = -1;
+    for (int i = 0; i < FONT5X7_W; i++) {
+        if (glyph[i]) {
+            if (lo < 0) lo = i;
+            hi = i;
+        }
+    }
+    *first = (lo < 0) ? 0 : lo;
+    *width = (lo < 0) ? 0 : (hi - lo + 1);
+}
+
+#define SPACE_COLS 2      /* a word gap, plus the usual one column of air */
+#define GAP_COLS   1
+
+static int char_advance(char c, int scale)
 {
     if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
-    if (c < FONT5X7_FIRST || c > FONT5X7_LAST) return;
+    if (c < FONT5X7_FIRST || c > FONT5X7_LAST) return 0;
+    if (fixed_width(c)) return (FONT5X7_W + GAP_COLS) * scale;
+
+    int first, width;
+    glyph_ink(font5x7[(int)c - FONT5X7_FIRST], &first, &width);
+    if (width == 0) return (SPACE_COLS + GAP_COLS) * scale;
+    return (width + GAP_COLS) * scale;
+}
+
+/* Draws one glyph with its ink starting at x, and returns how far the pen
+ * should move. Trimming here is what makes the advance above meaningful. */
+static int draw_glyph(int x, int y, char c, int scale,
+                      uint8_t r, uint8_t g, uint8_t b)
+{
+    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    if (c < FONT5X7_FIRST || c > FONT5X7_LAST) return 0;
+
     const uint8_t *glyph = font5x7[(int)c - FONT5X7_FIRST];
+    int first, width;
+    glyph_ink(glyph, &first, &width);
+    if (fixed_width(c)) first = 0;          /* keep the cell, do not trim */
 
     for (int col = 0; col < FONT5X7_W; col++) {
         uint8_t bits = glyph[col];
+        if (!bits) continue;
         for (int row = 0; row < FONT5X7_H; row++) {
             if (!(bits & (1u << row))) continue;
-            /* One font pixel becomes a scale x scale block. */
             for (int dy = 0; dy < scale; dy++) {
                 for (int dx = 0; dx < scale; dx++) {
-                    hub75_set_pixel(x + col * scale + dx, y + row * scale + dy, r, g, b);
+                    hub75_set_pixel(x + (col - first) * scale + dx,
+                                    y + row * scale + dy, r, g, b);
                 }
             }
         }
     }
+    return char_advance(c, scale);
+}
+
+void gfx_char(int x, int y, char c, int scale, uint8_t r, uint8_t g, uint8_t b)
+{
+    draw_glyph(x, y, c, scale, r, g, b);
+}
+
+int gfx_char_advance(char c, int scale)
+{
+    return char_advance(c, scale);
 }
 
 void gfx_text(int x, int y, const char *s, int scale, uint8_t r, uint8_t g, uint8_t b)
 {
     for (; *s; s++) {
-        gfx_char(x, y, *s, scale, r, g, b);
-        x += (FONT5X7_W + 1) * scale;
+        x += draw_glyph(x, y, *s, scale, r, g, b);
     }
 }
 
 int gfx_text_width(const char *s, int scale)
 {
-    int n = (int)strlen(s);
-    return n ? n * (FONT5X7_W + 1) * scale - scale : 0;   /* no trailing gap */
+    int w = 0;
+    for (; *s; s++) w += char_advance(*s, scale);
+    return w ? w - GAP_COLS * scale : 0;       /* no gap after the last glyph */
 }
 
 void gfx_text_center(int y, const char *s, int scale, uint8_t r, uint8_t g, uint8_t b)
