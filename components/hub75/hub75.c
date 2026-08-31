@@ -126,6 +126,8 @@ static volatile uint32_t s_frames;
 static uint8_t s_brightness = 160;
 static volatile bool s_running;
 static uint8_t s_gamma[256];
+static uint8_t s_gamma5[32];    /* RGB565 red/blue -> plane value */
+static uint8_t s_gamma6[64];    /* RGB565 green    -> plane value */
 
 static void build_gamma(void)
 {
@@ -137,6 +139,10 @@ static void build_gamma(void)
         int v = (int)lrintf(powf(i / 255.0f, 2.2f) * maxv);
         s_gamma[i] = (uint8_t)(v > maxv ? maxv : v);
     }
+    /* Straight from the packed RGB565 fields, so a blit needs no unpacking
+     * arithmetic per pixel. */
+    for (int i = 0; i < 32; i++) s_gamma5[i] = s_gamma[i * 255 / 31];
+    for (int i = 0; i < 64; i++) s_gamma6[i] = s_gamma[i * 255 / 63];
 }
 
 /* Rewrites the OE bit of every word. Safe to call while refreshing -- the
@@ -320,6 +326,36 @@ void hub75_set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b)
         if (gv & (1 << p)) v |= gm;
         if (bv & (1 << p)) v |= bm;
         *w = v;
+    }
+}
+
+void hub75_blit_rgb565(const uint16_t *frame)
+{
+    if (!s_buf || !frame) return;
+
+    for (int row = 0; row < HUB75_ROWS; row++) {
+        const uint16_t *top = frame + (size_t)row * HUB75_WIDTH;
+        const uint16_t *bot = frame + (size_t)(row + HUB75_ROWS) * HUB75_WIDTH;
+
+        uint16_t *blk[HUB75_PLANES];
+        for (int p = 0; p < HUB75_PLANES; p++) {
+            blk[p] = &s_buf[BLOCK_BASE(BLOCK_OF(row, p))];
+        }
+
+        for (int x = 0; x < HUB75_WIDTH; x++) {
+            uint16_t t = top[x], b = bot[x];
+            uint8_t tr = s_gamma5[t >> 11], tg = s_gamma6[(t >> 5) & 0x3F], tb = s_gamma5[t & 0x1F];
+            uint8_t br = s_gamma5[b >> 11], bg = s_gamma6[(b >> 5) & 0x3F], bb = s_gamma5[b & 0x1F];
+
+            for (int p = 0; p < HUB75_PLANES; p++) {
+                uint16_t bits = (uint16_t)(
+                      (((tr >> p) & 1) << BIT_R1) | (((tg >> p) & 1) << BIT_G1)
+                    | (((tb >> p) & 1) << BIT_B1) | (((br >> p) & 1) << BIT_R2)
+                    | (((bg >> p) & 1) << BIT_G2) | (((bb >> p) & 1) << BIT_B2));
+                uint16_t *w = &blk[p][x];
+                *w = (uint16_t)((*w & ~MASK_RGB) | bits);
+            }
+        }
     }
 }
 

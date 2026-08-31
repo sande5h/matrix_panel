@@ -1,0 +1,8 @@
+# Sized for an 8 MB module so it fits either board; on the 16 MB N16R8 the
+# video partition can grow to about 13M. One second of 128x64 RGB565 at 15 fps
+# is 240 KiB, so 5M holds roughly 21 seconds.
+# Name,   Type, SubType, Offset,   Size,  Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  2M,
+video,    data, spiffs,  ,         5M,

@@ -6,6 +6,7 @@
 #include "esp_timer.h"
 
 #include "hub75.h"
+#include "video.h"
 
 static const char *TAG = "main";
 
@@ -121,6 +122,10 @@ void app_main(void)
     pin_check();
 #endif
     self_test();
+
+    /* A flashed clip wins; the plasma is the fallback when there is none. */
+    if (video_play(true)) return;
+    ESP_LOGI(TAG, "no clip flashed, running the plasma instead");
 
     int64_t t0 = esp_timer_get_time();
     int64_t next_log = 0;

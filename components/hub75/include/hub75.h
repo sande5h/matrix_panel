@@ -64,6 +64,12 @@ void hub75_set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b);
 void hub75_fill(uint8_t r, uint8_t g, uint8_t b);
 void hub75_clear(void);
 
+/* Blits a whole RGB565 frame, HUB75_WIDTH * HUB75_HEIGHT pixels, row major,
+ * native byte order. Much faster than looping hub75_set_pixel: it walks each
+ * (row, plane) block once and writes both halves of a column in one word.
+ * Intended for video, where a full frame is redrawn every time. */
+void hub75_blit_rgb565(const uint16_t *frame);
+
 /* Global brightness, 0..255. Implemented by shortening the OE windows, so it
  * costs no colour depth at the top end but crushes it at the bottom. */
 void hub75_set_brightness(uint8_t brightness);
