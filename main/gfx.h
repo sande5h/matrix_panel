@@ -19,10 +19,10 @@ void gfx_text_center(int y, const char *s, int scale, uint8_t r, uint8_t g, uint
 void gfx_fill_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b);
 void gfx_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b);
 
-/* A labelled progress bar: one character label, an outlined track filled to
- * pct, and the percentage right aligned. Inset from both edges. Used for the
- * Claude quota rows. */
-void gfx_bar(int y, char label, int pct, bool dim);
+/* A bare progress bar: no label, no track, no number -- just a filled run
+ * across the panel's full width, 0 to 100%. Reads as a level from across the
+ * room, which is all these rows need to do. */
+void gfx_bar_full(int y, int height, int pct, bool dim);
 
 /* The top row as a minute sweep: a line growing left to right, full width at
  * the 59th second. Reads as motion from across the room, where a two digit

@@ -21,7 +21,7 @@ static void send_state(httpd_req_t *req)
 
     char body[320];
     int n = snprintf(body, sizeof(body),
-        "{\"screen\":\"%s\",\"screens\":[\"clock\",\"usage\",\"video\"],"
+        "{\"screen\":\"%s\",\"screens\":[\"clock\",\"video\"],"
         "\"ip\":\"%s\",\"up_s\":%lld,"
         "\"usage\":{\"valid\":%s,\"stale\":%s,\"session_pct\":%d,\"weekly_pct\":%d,"
         "\"session_resets\":\"%s\",\"weekly_resets\":\"%s\"}}",
@@ -80,7 +80,6 @@ static const char PAGE[] =
 "<h2>matrix panel</h2><p>showing <b id=s>...</b></p>"
 "<p><button onclick=\"go('/toggle')\">toggle</button>"
 "<button onclick=\"go('/screen?s=clock')\">clock</button>"
-"<button onclick=\"go('/screen?s=usage')\">usage</button>"
 "<button onclick=\"go('/screen?s=video')\">video</button></p>"
 "<pre id=j style='color:#888'></pre>"
 "<script>function show(d){document.getElementById('s').textContent=d.screen;"

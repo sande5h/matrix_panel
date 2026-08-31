@@ -126,12 +126,16 @@ over mDNS so a DHCP change does not break anything pointing at it.
 | `GET /` | status page with buttons |
 | `GET /status` | current screen, IP, uptime and the last quota reading, as JSON |
 | `GET`/`POST /toggle` | advance to the next screen |
-| `GET /screen?s=clock\|usage\|video` | select one directly |
+| `GET /screen?s=clock\|video` | select one directly |
 
-Three screens: **clock** (minute sweep, date, time, quota bars), **usage** (the
-five hour window large, the seven day window as a bar) and **video** (the clip
-in the video partition). Video playback checks the current screen once per
-frame, so switching away interrupts a clip instead of waiting for it to end.
+Two screens: **clock** and **video** (the clip in the video partition). Video
+playback checks the current screen once per frame, so switching away interrupts
+a clip instead of waiting for it to end.
+
+The clock face is a minute sweep on the top row, the date, the time at 3x, and
+the Claude quota as two bare bars along the bottom four rows and the four rows
+above the gap. No labels or numbers on those: the length is the reading, and a
+percentage is unreadable at that size anyway.
 
 Every endpoint returns the same JSON, so the web page and the menu bar item
 can never disagree about what is on screen.
@@ -140,7 +144,7 @@ can never disagree about what is on screen.
 
 `tools/matrix_panel.lua` is a Hammerspoon module: left click toggles, the
 dropdown selects a screen directly, and the icon shows what is playing
-(🕒 clock, 📊 usage, 🎞 video, ▪️ unreachable). Install it with:
+(🕒 clock, 🎞 video, ▪️ unreachable). Install it with:
 
 ```
 cp tools/matrix_panel.lua ~/.hammerspoon/

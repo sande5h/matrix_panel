@@ -6,7 +6,7 @@
 #include "screen.h"
 
 static const char *TAG = "screen";
-static const char *const NAMES[SCREEN_COUNT] = { "clock", "usage", "video" };
+static const char *const NAMES[SCREEN_COUNT] = { "clock", "video" };
 
 /* A plain volatile int is enough: single word, written by the HTTP task and
  * read by the render loop, with no invariant spanning two fields. */

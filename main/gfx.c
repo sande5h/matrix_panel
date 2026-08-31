@@ -63,36 +63,22 @@ void gfx_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b)
     }
 }
 
-void gfx_bar(int y, char label, int pct, bool dim)
+void gfx_bar_full(int y, int height, int pct, bool dim)
 {
-    if (pct < 0) pct = 0;
+    if (pct <= 0) return;               /* nothing to show, so show nothing */
     if (pct > 100) pct = 100;
 
     /* Green while there is room, amber as it tightens, red near the limit --
-     * readable at a glance from across the room, which a number is not. */
+     * readable at a glance, which a number is not. */
     uint8_t r, g, b;
     if (pct < 60)      { r = 0;   g = 200; b = 60;  }
     else if (pct < 85) { r = 255; g = 170; b = 0;   }
     else               { r = 255; g = 40;  b = 40;  }
     if (dim) { r /= 3; g /= 3; b /= 3; }
 
-    /* Inset from both edges: hard against the panel border the row reads as
-     * an artefact rather than as content. */
-    const int margin = 4;
-    const int track_x = margin + FONT5X7_W + 3, track_h = 7;
-    const int track_w = HUB75_WIDTH - track_x - margin - 24;
-
-    gfx_char(margin, y, label, 1, 80, 80, 100);
-    gfx_rect(track_x, y, track_w, track_h, 40, 40, 55);
-    if (pct > 0) {
-        int fill = (track_w - 2) * pct / 100;
-        if (fill < 1) fill = 1;
-        gfx_fill_rect(track_x + 1, y + 1, fill, track_h - 2, r, g, b);
-    }
-
-    char txt[8];
-    snprintf(txt, sizeof(txt), "%d%%", pct);
-    gfx_text(HUB75_WIDTH - margin - gfx_text_width(txt, 1), y, txt, 1, r, g, b);
+    int len = HUB75_WIDTH * pct / 100;
+    if (len < 1) len = 1;               /* 1% must still be visible */
+    gfx_fill_rect(0, y, len, height, r, g, b);
 }
 
 void gfx_seconds_sweep(int sec)
