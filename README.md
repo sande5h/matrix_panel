@@ -86,6 +86,36 @@ Drawing writes straight into the live DMA buffer -- there is no double buffer,
 so a slow full-frame redraw can tear. A full 128x64 redraw is well under a
 millisecond, which fits inside one refresh period.
 
+## Playing video
+
+Frames are stored raw in a dedicated `video` partition -- no filesystem, no
+decoder on the device. Encode a clip you have the rights to:
+
+```
+./tools/encode_video.py clip.mp4 video.bin --fps 15
+parttool.py --port /dev/cu.usbmodem* write_partition \
+    --partition-name video --input video.bin
+```
+
+The script scales and letterboxes to 128x64, converts to RGB565 and prepends a
+16 byte header. On boot the app plays whatever is in that partition and falls
+back to the plasma if the partition is empty.
+
+Size is the real constraint, because the frames are uncompressed:
+
+| | |
+|---|---|
+| One frame | 16 KiB |
+| One second at 15 fps | 240 KiB |
+| The 5M partition | ~21 seconds |
+
+On a 16 MB module the partition can grow to about 13M in `partitions.csv`,
+which is roughly a minute. Longer than that wants an SD card or a codec.
+
+`main/video.c` reads one frame at a time into a 16 KiB buffer and calls
+`hub75_blit_rgb565()`, which walks each (row, plane) block once rather than
+doing six read-modify-writes per pixel.
+
 ## Build
 
 ```

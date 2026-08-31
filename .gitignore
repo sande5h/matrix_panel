@@ -6,3 +6,5 @@ dependencies.lock
 .vscode/
 ._*
 .DS_Store
+demo_video.bin
+*.bin
