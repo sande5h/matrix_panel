@@ -1,8 +1,14 @@
 /*
  * HUB75 LED matrix driver for ESP32-S3 (ESP-IDF v6).
  *
- * The panel is refreshed entirely by the PARLIO TX peripheral running a
- * looped DMA transfer, so the CPU is only ever touched when a pixel changes.
+ * The panel is refreshed by the LCD_CAM peripheral's i80 bus: every HUB75
+ * signal is one lane of the 16 bit parallel bus, CLK is the bus WR strobe,
+ * and GDMA pushes the whole frame. A small task re-queues the frame forever
+ * (LCD_CAM has no hardware loop mode), so the CPU cost is one interrupt per
+ * frame regardless of what is on screen.
+ *
+ * The i80 driver requires a D/C pin that HUB75 does not have; GPIO 15 is
+ * assigned as a dummy and should be left unconnected.
  *
  * Pin map (fixed at compile time, see hub75.c):
  *   Panel: 128x64, 1/32 scan.
@@ -29,11 +35,11 @@ extern "C" {
  * ghosting or smeared columns; the ribbon cable is usually the limit. */
 #define HUB75_PCLK_HZ (12 * 1000 * 1000)
 
-/* Allocates the DMA refresh buffer and configures PARLIO. Does not start
+/* Configures the i80 bus and allocates the DMA refresh buffer. Does not start
  * scanning yet -- call hub75_start(). */
 esp_err_t hub75_init(void);
 
-/* Starts / stops the looped DMA transfer that refreshes the panel. */
+/* Starts / stops the refresh task that keeps the DMA fed. */
 esp_err_t hub75_start(void);
 esp_err_t hub75_stop(void);
 
@@ -48,7 +54,8 @@ void hub75_clear(void);
 void hub75_set_brightness(uint8_t brightness);
 uint8_t hub75_get_brightness(void);
 
-/* Measured refresh rate of the whole panel, in Hz. */
+/* Measured refresh rate, in Hz, over the interval since the previous call.
+ * Returns 0 on the first call. */
 float hub75_refresh_hz(void);
 
 #ifdef __cplusplus

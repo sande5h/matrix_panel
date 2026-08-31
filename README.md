@@ -3,10 +3,16 @@
 HUB75 LED matrix driver for the ESP32-S3, ESP-IDF v6. Targets a 128x64
 1/32-scan panel.
 
-The panel is refreshed by the **PARLIO TX** peripheral running a single looped
-DMA transfer. Every HUB75 signal except the pixel clock is a PARLIO data line;
-CLK is the peripheral's own clock output. Once started, the CPU is idle unless
-a pixel changes -- there is no refresh task and no per-row interrupt.
+The panel is refreshed by the **LCD_CAM** peripheral's i80 bus. Every HUB75
+signal is one lane of the 16 bit parallel bus, CLK is the bus WR strobe, and
+GDMA pushes the entire frame in one transaction. LCD_CAM has no hardware loop
+mode, so a small task re-queues the frame forever with a queue depth of two --
+one transfer runs while the next is already pending, and the task sits blocked
+the rest of the time. The cost is one interrupt per frame, not per row.
+
+(The S3 has no PARLIO peripheral -- LCD_CAM is the only 16-bit parallel DMA
+engine on this chip, and it is what the well-known Arduino HUB75 DMA library
+uses too.)
 
 ## Wiring
 
@@ -20,6 +26,10 @@ a pixel changes -- there is no refresh task and no per-row interrupt.
 | B2    | 7    | | LAT   | 14   |
 |       |      | | OE    | 21   |
 |       |      | | CLK   | 47   |
+
+The i80 driver requires a D/C pin that HUB75 does not have. **GPIO 15** is
+assigned as a dummy -- leave it unconnected, or change `PIN_DUMMY_DC` in
+`hub75.c` to any other free pin.
 
 Ground the panel to the S3 as well, and power the panel from its own 5 V supply
 -- a 128x64 panel at full white pulls the better part of 10 A and must not be
@@ -86,12 +96,13 @@ idf.py build flash monitor
 
 ## Status
 
-Written against the ESP-IDF v6 PARLIO TX API; not yet verified on hardware.
-Two things to check first on a real panel:
+Compiles against ESP-IDF v6.0.2; not yet verified on hardware. Two things to
+check first on a real panel:
 
-1. **Bit order.** The driver assumes `PARLIO_BIT_PACK_ORDER_LSB` puts bit 0 of
-   each word on `data_gpio_nums[0]`. If colours come out scrambled, that
-   assumption is where to look.
+1. **Bit order.** The driver assumes bit 0 of each 16 bit word comes out on
+   `data_gpio_nums[0]`, with no byte swapping. If colours come out scrambled,
+   that is where to look -- `flags.swap_color_bytes` and
+   `flags.reverse_color_bits` on the i80 IO config are the knobs.
 2. **Latch polarity / tail length.** Four blanking words is generous for most
-   panels but some FM6126A-based ones need an init sequence before they will
+   panels, but some FM6126A-based ones need an init sequence before they will
    display anything at all.

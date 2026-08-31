@@ -3,8 +3,9 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/parlio_tx.h"
-#include "esp_heap_caps.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_io_i80.h"
+#include "esp_timer.h"
 #include "esp_check.h"
 #include "esp_log.h"
 
@@ -13,9 +14,9 @@
 static const char *TAG = "hub75";
 
 /* ------------------------------------------------------------------ pins */
-/* Every HUB75 signal is a PARLIO data line except CLK, which is the
- * peripheral's own clock output. The bit position below is the PARLIO data
- * line index, i.e. bit n of each 16 bit word drives data_gpio_nums[n]. */
+/* Every HUB75 signal is one lane of the 16 bit i80 bus except CLK, which is
+ * the bus's own WR strobe. The BIT_* value is the lane index, i.e. bit n of
+ * each 16 bit word drives data_gpio_nums[n]. */
 #define PIN_R1  4
 #define PIN_G1  9
 #define PIN_B1  5
@@ -29,7 +30,12 @@ static const char *TAG = "hub75";
 #define PIN_E  11
 #define PIN_LAT 14
 #define PIN_OE  21
-#define PIN_CLK 47
+#define PIN_CLK 47   /* i80 WR */
+
+/* The i80 driver insists on a D/C pin even though HUB75 has no such signal.
+ * Any free GPIO works; leave it unconnected. Avoid 19/20 (USB) and 26..32
+ * (SPI flash) on the S3. */
+#define PIN_DUMMY_DC 15
 
 #define BIT_R1  0
 #define BIT_G1  1
@@ -56,8 +62,8 @@ static const char *TAG = "hub75";
  *
  * The panel always displays what was latched at the end of the *previous*
  * block, so within block k the address lines and the OE window belong to
- * block k-1. That one-block skew is what makes the whole thing a single flat
- * buffer with no CPU involvement. */
+ * block k-1. That one-block skew is what makes the whole frame a single flat
+ * buffer the DMA can push with no CPU involvement. */
 #define BLANK_WORDS  4
 #define BLOCK_WORDS  (HUB75_WIDTH + BLANK_WORDS)
 #define NUM_BLOCKS   (HUB75_ROWS * HUB75_PLANES)
@@ -66,6 +72,11 @@ static const char *TAG = "hub75";
 
 #define BLOCK_OF(row, plane) ((row) * HUB75_PLANES + (plane))
 #define BLOCK_BASE(k)        ((k) * BLOCK_WORDS)
+
+/* GDMA wants the transfer size burst aligned. With the stock geometry this
+ * works out exactly; if you change WIDTH or PLANES and trip this, adjust
+ * BLANK_WORDS until it divides again. */
+_Static_assert(BUF_BYTES % 64 == 0, "refresh buffer must be a multiple of the 64 byte DMA burst");
 
 /* Plane p is lit for 2^p clocks scaled so the MSB plane fills the whole row
  * shift window. With WIDTH 128 and 6 planes that is 128, 64, 32, 16, 8, 4 --
@@ -77,9 +88,12 @@ static inline int plane_weight(int plane)
 
 /* --------------------------------------------------------------- state */
 static uint16_t *s_buf;
-static parlio_tx_unit_handle_t s_tx;
+static esp_lcd_i80_bus_handle_t s_bus;
+static esp_lcd_panel_io_handle_t s_io;
+static TaskHandle_t s_task;
+static volatile uint32_t s_frames;
 static uint8_t s_brightness = 160;
-static bool s_running;
+static volatile bool s_running;
 static uint8_t s_gamma[256];
 
 static void build_gamma(void)
@@ -90,8 +104,8 @@ static void build_gamma(void)
     }
 }
 
-/* Rewrites the OE bit of every word. Safe to call while the DMA loop is
- * running -- the worst case is one visibly dim frame. */
+/* Rewrites the OE bit of every word. Safe to call while refreshing -- the
+ * worst case is one visibly dim frame. */
 static void apply_oe(void)
 {
     for (int k = 0; k < NUM_BLOCKS; k++) {
@@ -103,8 +117,8 @@ static void apply_oe(void)
 
         uint16_t *w = &s_buf[BLOCK_BASE(k)];
         for (int i = 0; i < HUB75_WIDTH; i++) {
-            if (i < on) w[i] &= (uint16_t)~MASK_OE;   /* enabled  */
-            else        w[i] |=  MASK_OE;             /* blanked  */
+            if (i < on) w[i] &= (uint16_t)~MASK_OE;   /* enabled */
+            else        w[i] |=  MASK_OE;             /* blanked */
         }
         /* The blanking tail is always dark: LAT and the address lines only
          * ever move while the panel is off. */
@@ -139,6 +153,29 @@ static void build_skeleton(void)
     apply_oe();
 }
 
+static bool IRAM_ATTR on_frame_done(esp_lcd_panel_io_handle_t io,
+                                    esp_lcd_panel_io_event_data_t *ev, void *ctx)
+{
+    s_frames++;
+    return false;
+}
+
+/* The LCD peripheral has no hardware loop mode, so the frame is re-queued
+ * forever. With a queue depth of two, one transfer is always pending while
+ * another runs and the task spends its life blocked inside tx_color. */
+static void refresh_task(void *arg)
+{
+    while (s_running) {
+        esp_err_t err = esp_lcd_panel_io_tx_color(s_io, -1, s_buf, BUF_BYTES);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "tx_color: %s", esp_err_to_name(err));
+            break;
+        }
+    }
+    s_task = NULL;
+    vTaskDelete(NULL);
+}
+
 /* ---------------------------------------------------------------- API */
 esp_err_t hub75_init(void)
 {
@@ -146,24 +183,13 @@ esp_err_t hub75_init(void)
 
     build_gamma();
 
-    /* PARLIO reads this straight out of DMA, so it must be internal RAM. */
-    s_buf = heap_caps_aligned_calloc(64, 1, BUF_BYTES,
-                                     MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    ESP_RETURN_ON_FALSE(s_buf, ESP_ERR_NO_MEM, TAG,
-                        "no DMA memory for %u byte refresh buffer", (unsigned)BUF_BYTES);
-    build_skeleton();
-
-    parlio_tx_unit_config_t cfg = {
-        .clk_src           = PARLIO_CLK_SRC_DEFAULT,
-        .data_width        = 16,
-        .clk_in_gpio_num   = -1,
-        .clk_out_gpio_num  = PIN_CLK,
-        .valid_gpio_num    = -1,
-        .output_clk_freq_hz = HUB75_PCLK_HZ,
-        .trans_queue_depth = 2,
-        .max_transfer_size = BUF_BYTES,
-        .sample_edge       = PARLIO_SAMPLE_EDGE_POS,
-        .bit_pack_order    = PARLIO_BIT_PACK_ORDER_LSB,
+    esp_lcd_i80_bus_config_t bus_cfg = {
+        .clk_src            = LCD_CLK_SRC_DEFAULT,
+        .dc_gpio_num        = PIN_DUMMY_DC,
+        .wr_gpio_num        = PIN_CLK,
+        .bus_width          = 16,
+        .max_transfer_bytes = BUF_BYTES,
+        .dma_burst_size     = 64,
         .data_gpio_nums = {
             [BIT_R1] = PIN_R1, [BIT_G1] = PIN_G1, [BIT_B1] = PIN_B1,
             [BIT_R2] = PIN_R2, [BIT_G2] = PIN_G2, [BIT_B2] = PIN_B2,
@@ -174,44 +200,61 @@ esp_err_t hub75_init(void)
             [13] = -1, [14] = -1, [15] = -1,
         },
     };
+    ESP_RETURN_ON_ERROR(esp_lcd_new_i80_bus(&bus_cfg, &s_bus), TAG, "i80 bus failed");
 
-    esp_err_t err = parlio_new_tx_unit(&cfg, &s_tx);
-    if (err != ESP_OK) {
-        heap_caps_free(s_buf);
-        s_buf = NULL;
-        ESP_RETURN_ON_ERROR(err, TAG, "parlio_new_tx_unit failed");
-    }
+    esp_lcd_panel_io_i80_config_t io_cfg = {
+        .cs_gpio_num        = -1,            /* exclusive use of the bus */
+        .pclk_hz            = HUB75_PCLK_HZ,
+        .trans_queue_depth  = 2,
+        .lcd_cmd_bits       = 0,             /* raw data, no command phase */
+        .lcd_param_bits     = 0,
+        .on_color_trans_done = on_frame_done,
+        .flags = {
+            .pclk_idle_low = true,           /* CLK rests low between frames */
+        },
+    };
+    ESP_GOTO_ON_ERROR(esp_lcd_new_panel_io_i80(s_bus, &io_cfg, &s_io), err, TAG, "i80 io failed");
 
-    ESP_LOGI(TAG, "%dx%d, 1/%d scan, %d planes, %.1f MHz pclk, %u byte buffer, %.0f Hz refresh",
+    /* Let the driver pick the alignment GDMA and the cache want. */
+    s_buf = esp_lcd_i80_alloc_draw_buffer(s_io, BUF_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    ESP_GOTO_ON_FALSE(s_buf, ESP_ERR_NO_MEM, err, TAG,
+                      "no DMA memory for %u byte refresh buffer", (unsigned)BUF_BYTES);
+    build_skeleton();
+
+    ESP_LOGI(TAG, "%dx%d, 1/%d scan, %d planes, %.1f MHz pclk, %u byte buffer, ~%.0f Hz refresh",
              HUB75_WIDTH, HUB75_HEIGHT, HUB75_ROWS, HUB75_PLANES,
-             HUB75_PCLK_HZ / 1e6f, (unsigned)BUF_BYTES, hub75_refresh_hz());
+             HUB75_PCLK_HZ / 1e6f, (unsigned)BUF_BYTES,
+             (float)HUB75_PCLK_HZ / (float)BUF_WORDS);
     return ESP_OK;
+
+err:
+    if (s_io)  { esp_lcd_panel_io_del(s_io); s_io = NULL; }
+    if (s_bus) { esp_lcd_del_i80_bus(s_bus); s_bus = NULL; }
+    return s_buf ? ESP_FAIL : ESP_ERR_NO_MEM;
 }
 
 esp_err_t hub75_start(void)
 {
     ESP_RETURN_ON_FALSE(s_buf && !s_running, ESP_ERR_INVALID_STATE, TAG, "not ready");
 
-    ESP_RETURN_ON_ERROR(parlio_tx_unit_enable(s_tx), TAG, "enable failed");
-
-    parlio_transmit_config_t tcfg = {
-        .idle_value = MASK_OE,               /* park the panel blanked */
-        .flags = { .loop_transmission = true },
-    };
-    /* Payload length is in bits, not bytes. */
-    ESP_RETURN_ON_ERROR(parlio_tx_unit_transmit(s_tx, s_buf, BUF_BYTES * 8, &tcfg),
-                        TAG, "transmit failed");
-
     s_running = true;
+    /* Pinned to core 1 and above the default priority so a busy app can't
+     * stall the re-queue and blink the panel. */
+    if (xTaskCreatePinnedToCore(refresh_task, "hub75", 3072, NULL, 10, &s_task, 1) != pdPASS) {
+        s_running = false;
+        ESP_RETURN_ON_FALSE(false, ESP_ERR_NO_MEM, TAG, "refresh task failed");
+    }
     return ESP_OK;
 }
 
 esp_err_t hub75_stop(void)
 {
     ESP_RETURN_ON_FALSE(s_running, ESP_ERR_INVALID_STATE, TAG, "not running");
-    /* Disabling the unit aborts the loop; the idle value blanks the panel. */
-    ESP_RETURN_ON_ERROR(parlio_tx_unit_disable(s_tx), TAG, "disable failed");
     s_running = false;
+    /* The task exits after its in-flight frame drains. */
+    while (s_task) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
     return ESP_OK;
 }
 
@@ -270,5 +313,17 @@ uint8_t hub75_get_brightness(void)
 
 float hub75_refresh_hz(void)
 {
-    return (float)HUB75_PCLK_HZ / (float)BUF_WORDS;
+    static int64_t last_us;
+    static uint32_t last_frames;
+
+    int64_t now = esp_timer_get_time();
+    uint32_t frames = s_frames;
+
+    float hz = 0.0f;
+    if (last_us && now > last_us) {
+        hz = (frames - last_frames) * 1e6f / (float)(now - last_us);
+    }
+    last_us = now;
+    last_frames = frames;
+    return hz;
 }
