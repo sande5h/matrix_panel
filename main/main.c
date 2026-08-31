@@ -12,6 +12,7 @@
 #include "net.h"
 #include "video.h"
 #include "tests.h"
+#include "usage.h"
 
 static const char *TAG = "main";
 
@@ -46,9 +47,17 @@ static void draw_clock(void)
     snprintf(secs, sizeof(secs), "%02d", tm.tm_sec);
 
     hub75_clear();
-    gfx_text_center(3,  date, 1, 0,   140, 170);
-    gfx_text_center(15, hhmm, 3, 255, 170, 40);
-    gfx_text_center(44, secs, 2, 90,  90,  110);
+    gfx_text_center(2,  date, 1, 0, 140, 170);
+    gfx_text_center(11, hhmm, 3, 255, 170, 40);
+    gfx_text(HUB75_WIDTH - gfx_text_width(secs, 1), 25, secs, 1, 90, 90, 110);
+
+    /* Claude quota underneath: the five hour window, then the seven day one.
+     * Blank rows until the first poll lands, rather than a misleading zero. */
+    usage_t u;
+    if (usage_get(&u)) {
+        gfx_bar(36, 'S', u.session_pct, u.stale);
+        gfx_bar(48, 'W', u.weekly_pct,  u.stale);
+    }
 }
 
 /* Shown until the network and the clock are both up. Without this the panel
@@ -83,6 +92,7 @@ void app_main(void)
 #endif
 
     ESP_ERROR_CHECK(net_start());
+    usage_start();
 
     for (int spin = 0; !net_connected(); spin++) {
         draw_status("WIFI", NULL, spin);
@@ -105,9 +115,12 @@ void app_main(void)
 
         int64_t now = esp_timer_get_time();
         if (now >= next_log) {          /* periodic heartbeat, not change gated */
-            ESP_LOGI(TAG, "refresh %.0f Hz, ip %s, wifi %s",
+            usage_t u;
+            bool have = usage_get(&u);
+            ESP_LOGI(TAG, "refresh %.0f Hz, ip %s, wifi %s, usage %s",
                      hub75_refresh_hz(), net_ip(),
-                     net_connected() ? "up" : "down");
+                     net_connected() ? "up" : "down",
+                     have ? (u.stale ? "stale" : "fresh") : "waiting");
             next_log = now + 30000000LL;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
