@@ -122,7 +122,11 @@ static void build_gamma(void)
 {
     const int maxv = (1 << HUB75_PLANES) - 1;
     for (int i = 0; i < 256; i++) {
-        s_gamma[i] = (uint8_t)lrintf(powf(i / 255.0f, 2.2f) * maxv + 0.5f);
+        /* lrintf already rounds; adding 0.5 on top pushed 255 to 64, which
+         * does not fit in HUB75_PLANES bits -- every plane bit came out zero
+         * and full-brightness channels rendered as black. Clamp regardless. */
+        int v = (int)lrintf(powf(i / 255.0f, 2.2f) * maxv);
+        s_gamma[i] = (uint8_t)(v > maxv ? maxv : v);
     }
 }
 
