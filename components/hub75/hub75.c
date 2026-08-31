@@ -68,8 +68,8 @@ static const char *TAG = "hub75";
 #define BLOCK_BASE(k)        ((k) * BLOCK_WORDS)
 
 /* Plane p is lit for 2^p clocks scaled so the MSB plane fills the whole row
- * shift window. With WIDTH 64 and 6 planes that is 64, 32, 16, 8, 4, 2 -- all
- * of it hidden inside the data shift, so no padding words are needed. */
+ * shift window. With WIDTH 128 and 6 planes that is 128, 64, 32, 16, 8, 4 --
+ * all of it hidden inside the data shift, so no padding words are needed. */
 static inline int plane_weight(int plane)
 {
     return (HUB75_WIDTH << plane) >> (HUB75_PLANES - 1);

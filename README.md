@@ -1,6 +1,7 @@
 # matrix_panel
 
-HUB75 LED matrix driver for the ESP32-S3, ESP-IDF v6.
+HUB75 LED matrix driver for the ESP32-S3, ESP-IDF v6. Targets a 128x64
+1/32-scan panel.
 
 The panel is refreshed by the **PARLIO TX** peripheral running a single looped
 DMA transfer. Every HUB75 signal except the pixel clock is a PARLIO data line;
@@ -21,8 +22,8 @@ a pixel changes -- there is no refresh task and no per-row interrupt.
 |       |      | | CLK   | 47   |
 
 Ground the panel to the S3 as well, and power the panel from its own 5 V supply
--- a 64x64 panel at full white pulls several amps and must not be fed from the
-dev board.
+-- a 128x64 panel at full white pulls the better part of 10 A and must not be
+fed from the dev board.
 
 The S3's 3.3 V outputs are below the 5 V panel's guaranteed input threshold.
 Most panels work anyway on a short cable; if yours is flaky, put a 74AHCT245
@@ -30,15 +31,16 @@ level shifter in the ribbon.
 
 ## Configuration
 
-Defaults are a 64x64 1/32-scan panel (that is what the A..E address lines imply)
-at 8 MHz. All of it is in `components/hub75/include/hub75.h`:
+Defaults are a 128x64 1/32-scan panel (128 x 64 = 8192 pixels = 32 rows x two
+halves x 128 columns, which is what the A..E address lines imply) at 12 MHz.
+All of it is in `components/hub75/include/hub75.h`:
 
 - `HUB75_WIDTH` / `HUB75_HEIGHT` -- panel size
 - `HUB75_PLANES` -- BCM depth, 6 gives 64 levels per channel
 - `HUB75_PCLK_HZ` -- pixel clock; lower it if you see ghosting
 
-At the defaults the refresh buffer is 26 KB of internal DMA RAM and the panel
-refreshes at ~613 Hz.
+At the defaults the refresh buffer is 50 KB of internal DMA RAM and the panel
+refreshes at ~473 Hz.
 
 ## How the buffer is laid out
 
@@ -52,7 +54,7 @@ inside block `k` the address lines and the OE window belong to block `k-1`.
 That one-block skew is what lets the entire refresh be a static buffer.
 
 Bit plane `p` is lit for `2^p` clocks, scaled so the top plane fills the whole
-shift window: 64, 32, 16, 8, 4, 2 clocks. Every OE window therefore hides
+shift window: 128, 64, 32, 16, 8, 4 clocks. Every OE window therefore hides
 inside the data shift and the buffer needs no padding words.
 
 Brightness shortens the OE windows (`hub75_set_brightness`), so it costs no
@@ -70,8 +72,8 @@ hub75_set_brightness(160);                 // 0..255
 ```
 
 Drawing writes straight into the live DMA buffer -- there is no double buffer,
-so a slow full-frame redraw can tear. For a 64x64 panel a full redraw is a few
-hundred microseconds, which is well inside one refresh period.
+so a slow full-frame redraw can tear. A full 128x64 redraw is well under a
+millisecond, which fits inside one refresh period.
 
 ## Build
 

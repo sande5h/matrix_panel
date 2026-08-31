@@ -33,7 +33,8 @@ static void draw_plasma(float t)
             float v = sinf(x * 0.18f + t)
                     + sinf(y * 0.14f - t * 0.8f)
                     + sinf((x + y) * 0.11f + t * 0.5f)
-                    + sinf(sqrtf((float)((x - 32) * (x - 32) + (y - 32) * (y - 32))) * 0.22f - t);
+                    + sinf(sqrtf((float)((x - HUB75_WIDTH / 2) * (x - HUB75_WIDTH / 2) +
+                                  (y - HUB75_HEIGHT / 2) * (y - HUB75_HEIGHT / 2))) * 0.22f - t);
             uint8_t hue = (uint8_t)((v + 4.0f) * (255.0f / 8.0f));
             uint8_t r, g, b;
             hue_rgb(hue, &r, &g, &b);
