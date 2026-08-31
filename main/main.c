@@ -85,25 +85,39 @@ static void draw_border(void)
     }
 }
 
-/* Does a frame drawn once survive, or does it only show while it is being
- * redrawn? The plasma redraws every 20 ms and is visible; the old one-shot
- * test frames were not, so this tells the two apart directly. */
+/* Two things could explain a blank test frame while the plasma is visible:
+ * the frame does not survive being drawn only once, or the solid fill browns
+ * out the panel supply (a solid half is far more current than plasma, which is
+ * mostly dark). These steps separate them -- the border is only ~380 LEDs, so
+ * it cannot be a power problem. */
 static void draw_persistence_test(void)
 {
+    ESP_LOGI(TAG, "A: border, drawn ONCE -- expect a white border for 3 s");
+    draw_border();
+    hold("static border", 3000, NULL);
+
+    ESP_LOGI(TAG, "B: border, REDRAWN every 100 ms -- expect the same border");
+    hold("redrawn border", 3000, draw_border);
+
+    ESP_LOGI(TAG, "C: cleared -- expect black for 2 s");
+    hub75_clear();
+    hold("cleared", 2000, NULL);
+
+    /* Current test. If A and B were fine but this one is dark, dim or
+     * flickering, the panel supply is the problem, not the driver. */
     s_pat_r = s_pat_g = s_pat_b = 255;
     s_pat_y0 = 0;
     s_pat_y1 = HUB75_HEIGHT;
+    ESP_LOGI(TAG, "D: full white at 25%% brightness -- expect dim white for 2 s");
+    hub75_set_brightness(64);
+    hold("white dim", 2000, draw_half);
 
-    ESP_LOGI(TAG, "A: full white, drawn ONCE -- expect white for 3 s");
-    draw_half();
-    hold("static", 3000, NULL);
+    ESP_LOGI(TAG, "E: full white at full brightness -- watch for sag/flicker");
+    hub75_set_brightness(255);
+    hold("white bright", 2000, draw_half);
 
-    ESP_LOGI(TAG, "B: full white, REDRAWN every 100 ms -- expect white for 3 s");
-    hold("redrawn", 3000, draw_half);
-
+    hub75_set_brightness(160);
     hub75_clear();
-    ESP_LOGI(TAG, "C: cleared, drawn ONCE -- expect black for 2 s");
-    hold("cleared", 2000, NULL);
 }
 
 /* Lights one colour in one half of the panel at a time. Each half is fed by
