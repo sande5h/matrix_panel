@@ -39,24 +39,23 @@ static void draw_clock(void)
     struct tm tm;
     localtime_r(&now, &tm);
 
-    char date[16], hhmm[8], secs[4];
+    char date[16], hhmm[8];
     snprintf(date, sizeof(date), "%s %02d %s",
              DAYS[tm.tm_wday % 7], tm.tm_mday, MONTHS[tm.tm_mon % 12]);
     snprintf(hhmm, sizeof(hhmm), "%02d%c%02d",
              tm.tm_hour, (tm.tm_sec & 1) ? ' ' : ':', tm.tm_min);
-    snprintf(secs, sizeof(secs), "%02d", tm.tm_sec);
 
     hub75_clear();
-    gfx_text_center(2,  date, 1, 0, 140, 170);
-    gfx_text_center(11, hhmm, 3, 255, 170, 40);
-    gfx_text(HUB75_WIDTH - gfx_text_width(secs, 1), 25, secs, 1, 90, 90, 110);
+    gfx_seconds_sweep(tm.tm_sec);
+    gfx_text_center(4,  date, 1, 0, 140, 170);
+    gfx_text_center(13, hhmm, 3, 255, 170, 40);
 
     /* Claude quota underneath: the five hour window, then the seven day one.
      * Blank rows until the first poll lands, rather than a misleading zero. */
     usage_t u;
     if (usage_get(&u)) {
-        gfx_bar(36, 'S', u.session_pct, u.stale);
-        gfx_bar(48, 'W', u.weekly_pct,  u.stale);
+        gfx_bar(40, 'S', u.session_pct, u.stale);
+        gfx_bar(52, 'W', u.weekly_pct,  u.stale);
     }
 }
 

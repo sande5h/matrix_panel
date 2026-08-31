@@ -5,6 +5,7 @@
 #include "gfx.h"
 #include "font5x7.h"
 
+
 void gfx_char(int x, int y, char c, int scale, uint8_t r, uint8_t g, uint8_t b)
 {
     if (c < FONT5X7_FIRST || c > FONT5X7_LAST) return;
@@ -75,9 +76,13 @@ void gfx_bar(int y, char label, int pct, bool dim)
     else               { r = 255; g = 40;  b = 40;  }
     if (dim) { r /= 3; g /= 3; b /= 3; }
 
-    const int track_x = 8, track_w = 88, track_h = 7;
+    /* Inset from both edges: hard against the panel border the row reads as
+     * an artefact rather than as content. */
+    const int margin = 4;
+    const int track_x = margin + FONT5X7_W + 3, track_h = 7;
+    const int track_w = HUB75_WIDTH - track_x - margin - 24;
 
-    gfx_char(0, y, label, 1, 80, 80, 100);
+    gfx_char(margin, y, label, 1, 80, 80, 100);
     gfx_rect(track_x, y, track_w, track_h, 40, 40, 55);
     if (pct > 0) {
         int fill = (track_w - 2) * pct / 100;
@@ -87,5 +92,14 @@ void gfx_bar(int y, char label, int pct, bool dim)
 
     char txt[8];
     snprintf(txt, sizeof(txt), "%d%%", pct);
-    gfx_text(HUB75_WIDTH - gfx_text_width(txt, 1), y, txt, 1, r, g, b);
+    gfx_text(HUB75_WIDTH - margin - gfx_text_width(txt, 1), y, txt, 1, r, g, b);
+}
+
+void gfx_seconds_sweep(int sec)
+{
+    if (sec < 0) sec = 0;
+    if (sec > 59) sec = 59;
+    /* +1 so the row is never empty at :00 and reaches the full width at :59. */
+    int len = (sec + 1) * HUB75_WIDTH / 60;
+    for (int x = 0; x < len; x++) hub75_set_pixel(x, 0, 0, 200, 80);
 }

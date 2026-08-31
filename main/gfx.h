@@ -20,5 +20,11 @@ void gfx_fill_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b);
 void gfx_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b);
 
 /* A labelled progress bar: one character label, an outlined track filled to
- * pct, and the percentage right aligned. Used for the Claude quota rows. */
+ * pct, and the percentage right aligned. Inset from both edges. Used for the
+ * Claude quota rows. */
 void gfx_bar(int y, char label, int pct, bool dim);
+
+/* The top row as a minute sweep: a line growing left to right, full width at
+ * the 59th second. Reads as motion from across the room, where a two digit
+ * seconds counter does not. */
+void gfx_seconds_sweep(int sec);
