@@ -5,7 +5,7 @@
 #include "freertos/task.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_io_i80.h"
-#include "hal/lcd_periph.h"
+#include "soc/gpio_sig_map.h"
 #include "esp_rom_gpio.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -236,9 +236,12 @@ esp_err_t hub75_init(void)
     ESP_RETURN_ON_ERROR(esp_lcd_new_i80_bus(&bus_cfg, &s_bus), TAG, "i80 bus failed");
 
     /* Re-route OE through the GPIO matrix inverted, so that an all-zero word
-     * blanks the panel instead of lighting address 0. The i80 bus is bus 0;
-     * the S3 only has one. */
-    esp_rom_gpio_connect_out_signal(PIN_OE, soc_lcd_i80_signals[0].data_sigs[BIT_OE],
+     * blanks the panel instead of lighting address 0. The i80 data lanes are
+     * the contiguous LCD_DATA_OUT*_IDX signals; hal/lcd_periph.h has the same
+     * table but pulls in headers this component does not depend on. */
+    _Static_assert(LCD_DATA_OUT12_IDX == LCD_DATA_OUT0_IDX + 12,
+                   "LCD data out signals are not contiguous");
+    esp_rom_gpio_connect_out_signal(PIN_OE, LCD_DATA_OUT0_IDX + BIT_OE,
                                     true /* invert */, false);
 
     esp_lcd_panel_io_i80_config_t io_cfg = {
