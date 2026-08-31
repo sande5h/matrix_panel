@@ -34,10 +34,15 @@ static const char *TAG = "hub75";
 #define PIN_OE  21
 #define PIN_CLK 47   /* i80 WR */
 
-/* The i80 driver insists on a D/C pin even though HUB75 has no such signal.
- * Any free GPIO works; leave it unconnected. Avoid 19/20 (USB) and 26..32
- * (SPI flash) on the S3. */
+/* HUB75 needs 13 of the bus's 16 lanes, but the i80 driver validates all 16
+ * and rejects -1, and it wants a D/C pin that HUB75 does not have either. So
+ * four pins are burnt as dummies. Leave all four unconnected; any free GPIO
+ * works. Avoid 19/20 (USB), 26..32 (SPI flash), 33..37 (octal PSRAM on -R8
+ * modules) and 43/44 (console UART). */
 #define PIN_DUMMY_DC 15
+#define PIN_DUMMY_13 16
+#define PIN_DUMMY_14 17
+#define PIN_DUMMY_15 18
 
 #define BIT_R1  0
 #define BIT_G1  1
@@ -201,7 +206,7 @@ esp_err_t hub75_init(void)
             [BIT_D]  = PIN_D,  [BIT_E]  = PIN_E,
             [BIT_LAT] = PIN_LAT,
             [BIT_OE]  = PIN_OE,
-            [13] = -1, [14] = -1, [15] = -1,
+            [13] = PIN_DUMMY_13, [14] = PIN_DUMMY_14, [15] = PIN_DUMMY_15,
         },
     };
     ESP_RETURN_ON_ERROR(esp_lcd_new_i80_bus(&bus_cfg, &s_bus), TAG, "i80 bus failed");

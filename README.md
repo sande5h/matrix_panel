@@ -27,9 +27,10 @@ uses too.)
 |       |      | | OE    | 21   |
 |       |      | | CLK   | 47   |
 
-The i80 driver requires a D/C pin that HUB75 does not have. **GPIO 15** is
-assigned as a dummy -- leave it unconnected, or change `PIN_DUMMY_DC` in
-`hub75.c` to any other free pin.
+The i80 driver requires a D/C pin, and a 16 bit bus requires all 16 data lanes
+to be real GPIOs -- it rejects `-1`. HUB75 uses only 13 of them, so **GPIO 15,
+16, 17 and 18** are burnt as dummies. Leave all four unconnected, or point the
+`PIN_DUMMY_*` defines in `hub75.c` at whatever your board has spare.
 
 Ground the panel to the S3 as well, and power the panel from its own 5 V supply
 -- a 128x64 panel at full white pulls the better part of 10 A and must not be

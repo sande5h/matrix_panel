@@ -7,8 +7,9 @@
  * (LCD_CAM has no hardware loop mode), so the CPU cost is one interrupt per
  * frame regardless of what is on screen.
  *
- * The i80 driver requires a D/C pin that HUB75 does not have; GPIO 15 is
- * assigned as a dummy and should be left unconnected.
+ * The i80 driver requires a D/C pin, and with a 16 bit bus it requires all 16
+ * data lanes to be real GPIOs even though HUB75 only uses 13. GPIO 15..18 are
+ * assigned as dummies and should be left unconnected.
  *
  * Pin map (fixed at compile time, see hub75.c):
  *   Panel: 128x64, 1/32 scan.
