@@ -173,30 +173,35 @@ static void one_line(const char *what, int row, int col, int ms)
     hold(what, ms, draw_lines);
 }
 
-/* Drawing row 31 white lit rows 31 AND 63, and lit them cyan rather than
- * white. Nothing in the driver can put upper-half data into the lower half, so
- * this walks one row in one colour at a time. Each step drives exactly ONE
- * HUB75 data line, named in the log, so whatever shows up on the panel maps
- * straight back to a wire.
+/* R1 lights one row; the other five light two rows 32 apart. A short would be
+ * symmetric (R1 would leak into R2 as well), so this is not a wiring fault.
  *
- * Row 31 is the last row of the top half   -> R1 (GPIO 4) / G1 (9) / B1 (5)
- * Row 63 is the last row of the bottom half -> R2 (GPIO 6) / G2 (10) / B2 (7)
- *
- * One line, right place, right colour  = that wire is good.
- * Two lines 32 apart                   = that pin is shorted to its partner.
- * No line at all                       = that wire is open. */
-static void probe(const char *signal, int gpio, int row, uint8_t r, uint8_t g, uint8_t b)
-{
-    char what[48];
-    snprintf(what, sizeof(what), "%s (GPIO %d) row %d", signal, gpio, row);
-    ESP_LOGI(TAG, "=== %s: expect ONE line at row %d ===", what, row);
+ * The remaining question is whether the two halves are showing the SAME data.
+ * These blocks are deliberately asymmetric -- a block in the top half sits on
+ * the LEFT, one in the bottom half sits on the RIGHT. If a top-half block
+ * appears twice and both copies are on the left, the lower half is being fed
+ * the upper half's data. If the second copy is somewhere else, the panel's
+ * scan mapping is not the plain 1/32 we assume. */
+static int s_blk_y0, s_blk_y1, s_blk_x0, s_blk_x1;
 
-    s_line_row = row;
-    s_line_col = -1;
-    s_probe_r = r;
-    s_probe_g = g;
-    s_probe_b = b;
-    hold(what, 2500, draw_lines);
+static void draw_block(void)
+{
+    hub75_clear();
+    for (int y = s_blk_y0; y < s_blk_y1; y++) {
+        for (int x = s_blk_x0; x < s_blk_x1; x++) {
+            hub75_set_pixel(x, y, s_probe_r, s_probe_g, s_probe_b);
+        }
+    }
+}
+
+static void block(const char *what, int y0, int y1, int x0, int x1,
+                  uint8_t r, uint8_t g, uint8_t b)
+{
+    s_blk_y0 = y0; s_blk_y1 = y1;
+    s_blk_x0 = x0; s_blk_x1 = x1;
+    s_probe_r = r; s_probe_g = g; s_probe_b = b;
+    ESP_LOGI(TAG, "=== %s: rows %d..%d, columns %d..%d ===", what, y0, y1 - 1, x0, x1 - 1);
+    hold(what, 3000, draw_block);
 }
 
 void app_main(void)
@@ -206,11 +211,28 @@ void app_main(void)
     hub75_set_brightness(128);
 
     while (1) {
-        probe("R1", 4,  31, 255, 0, 0);
-        probe("G1", 9,  31, 0, 255, 0);
-        probe("B1", 5,  31, 0, 0, 255);
-        probe("R2", 6,  63, 255, 0, 0);
-        probe("G2", 10, 63, 0, 255, 0);
-        probe("B2", 7,  63, 0, 0, 255);
+        /* Top half, LEFT quarter, green. */
+        block("TOP-LEFT green", 8, 12, 0, 32, 0, 255, 0);
+
+        /* Bottom half, RIGHT quarter, blue. Mirrors the step above. */
+        block("BOTTOM-RIGHT blue", 40, 44, 96, 128, 0, 0, 255);
+
+        /* Both at once: if the halves mirror each other, every copy shows both
+         * colours in both positions. */
+        ESP_LOGI(TAG, "=== BOTH: green top-left + blue bottom-right ===");
+        s_probe_r = 0; s_probe_g = 255; s_probe_b = 0;
+        int64_t t_end = esp_timer_get_time() + 4000000LL;
+        while (esp_timer_get_time() < t_end) {
+            hub75_clear();
+            for (int y = 8; y < 12; y++)
+                for (int x = 0; x < 32; x++) hub75_set_pixel(x, y, 0, 255, 0);
+            for (int y = 40; y < 44; y++)
+                for (int x = 96; x < 128; x++) hub75_set_pixel(x, y, 0, 0, 255);
+            ESP_LOGI(TAG, "  both  frames=%lu", (unsigned long)hub75_frame_count());
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+
+        /* Single row in the middle of the TOP half, one channel, for reference. */
+        block("TOP row 16 green", 16, 17, 0, 128, 0, 255, 0);
     }
 }
