@@ -144,17 +144,19 @@ end
 -- synchronous osascript that blocks -- an app busy, a consent prompt waiting --
 -- would otherwise freeze all of Hammerspoon, App Lock included.
 
-local BROWSERS = { "Helium", "Safari", "Google Chrome", "Arc", "Brave Browser" }
-local AUDIO_MARK = "\u{1F50A}"    -- the speaker a playing window carries
+local PROBE  = os.getenv("HOME") .. "/.hammerspoon/nowplaying.applescript"
+local FFMPEG = "/opt/homebrew/bin/ffmpeg"
+local CURL   = "/usr/bin/curl"
 
 local lastPayload, lastPush = nil, 0
+local lastArt, lastArtPush = nil, 0
 
 -- The panel's font is 5x7 ASCII, so anything outside it renders as a gap.
 -- Strip it here rather than shipping blanks to the panel.
 local function clean(title)
     if not title then return nil end
-    local s = title:gsub("[\128-\255]", "")          -- emoji, ellipsis, accents
-    s = s:gsub("%s*%-%s*YouTube%s*$", "")             -- the site name is noise
+    local s = title:gsub("[\128-\255]", "")          -- emoji, ellipsis, non-latin
+    s = s:gsub("%s*%-%s*YouTube%s*$", "")
     s = s:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s%s+", " ")
     return (s ~= "" and s) or nil
 end
@@ -173,55 +175,70 @@ local function push(np)
                       { ["Content-Type"] = "application/json" }, function() end)
 end
 
--- Walks the browser list one at a time, asynchronously, stopping at the first
--- window marked as playing. Newline delimiters rather than the default comma,
--- because titles contain commas.
-local function pollBrowsers(i)
-    i = i or 1
-    local name = BROWSERS[i]
-    if not name then push(nil) return end
-    if not hs.application.get(name) then return pollBrowsers(i + 1) end
+-- Artwork goes over its own endpoint as raw RGB565: ffmpeg fetches, crops to
+-- square, scales and converts, and curl streams the 4.6 KiB straight to the
+-- panel. Piping through sh keeps the binary out of Lua entirely.
+--
+-- Re-sent every two minutes even when unchanged, because a panel that rebooted
+-- has forgotten it and nothing else would tell us.
+local function pushArt(url)
+    if not url or url == "" then return end
+    local now = os.time()
+    if url == lastArt and (now - lastArtPush) < 120 then return end
+    lastArt, lastArtPush = url, now
 
-    local script = string.format([[tell application %q
-        set AppleScript's text item delimiters to linefeed
-        return (name of every window) as text
-    end tell]], name)
+    local cmd = string.format(
+        "%s -v error -y -i %q -frames:v 1 " ..
+        "-vf 'scale=48:48:force_original_aspect_ratio=increase,crop=48:48' " ..
+        "-f rawvideo -pix_fmt rgb565le - | " ..
+        "%s -s -X POST --data-binary @- " ..
+        "-H 'Content-Type: application/octet-stream' %q",
+        FFMPEG, url, CURL, "http://" .. host() .. "/nowplaying/art")
 
-    hs.task.new("/usr/bin/osascript", function(rc, out)
-        if rc == 0 and out then
-            for line in out:gmatch("[^\n]+") do
-                if line:find(AUDIO_MARK, 1, true) then
-                    local title = clean(line)
-                    if title then
-                        push({ title = title, artist = name,
-                               position = 0, duration = 0, playing = true })
-                        return
-                    end
-                end
-            end
-        end
-        pollBrowsers(i + 1)
-    end, { "-e", script }):start()
+    hs.task.new("/bin/sh", nil, { "-c", cmd }):start()
 end
 
 -- Music.app knows exactly what it is playing, so prefer it when it is running.
 -- Guarded by application.get so AppleScript never launches it.
+local function fromMusic()
+    if not (hs.application.get("Music") and hs.itunes.isRunning()) then return nil end
+    if hs.itunes.getPlaybackState() ~= hs.itunes.state_playing then return nil end
+    local title = clean(hs.itunes.getCurrentTrack())
+    if not title then return nil end
+    return {
+        title    = title,
+        artist   = clean(hs.itunes.getCurrentArtist()) or "",
+        position = math.floor(hs.itunes.getPosition() or 0),
+        duration = math.floor(hs.itunes.getDuration() or 0),
+        playing  = true,
+    }
+end
+
 local function pushNowPlaying()
-    if hs.application.get("Music") and hs.itunes.isRunning()
-       and hs.itunes.getPlaybackState() == hs.itunes.state_playing then
-        local title = clean(hs.itunes.getCurrentTrack())
-        if title then
-            push({ title    = title,
-                   artist   = clean(hs.itunes.getCurrentArtist()) or "",
-                   position = math.floor(hs.itunes.getPosition() or 0),
-                   duration = math.floor(hs.itunes.getDuration() or 0),
-                   playing  = true })
-            return
+    local m = fromMusic()
+    if m then push(m) return end
+
+    hs.task.new("/usr/bin/osascript", function(rc, out)
+        if rc == 0 and out and out:match("%S") then
+            local ok, d = pcall(hs.json.decode, out)
+            if ok and d and d.title then
+                local title = clean(d.title)
+                if title then
+                    push({ title    = title,
+                           artist   = clean(d.artist) or "",
+                           position = d.position or 0,
+                           duration = d.duration or 0,
+                           playing  = d.playing and true or false })
+                    pushArt(d.art)
+                    return
+                end
+            end
         end
-    end
-    pollBrowsers(1)
+        push(nil)
+    end, { PROBE }):start()
 end
 
 M.npTimer = hs.timer.doEvery(3, pushNowPlaying)
+
 
 return M
