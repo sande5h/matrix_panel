@@ -13,6 +13,7 @@
 #include "video.h"
 #include "tests.h"
 #include "usage.h"
+#include "nowplaying.h"
 #include "screen.h"
 #include "server.h"
 
@@ -63,18 +64,6 @@ static void draw_clock(void)
     }
 }
 
-/* The font covers 0x20..0x5A, so "4h 59m" from the server has to be folded to
- * uppercase before it can be drawn. */
-static void upper(char *dst, size_t n, const char *src)
-{
-    size_t i = 0;
-    for (; src[i] && i + 1 < n; i++) {
-        char c = src[i];
-        dst[i] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
-    }
-    dst[i] = '\0';
-}
-
 /* One quota window: its name and countdown on one line, the percentage large
  * beneath, then a tracked bar. Laid out from `top` so both windows can use it
  * and stay identical. */
@@ -85,9 +74,9 @@ static void draw_window(int top, const char *name, int pct,
 
     gfx_text(2, top, name, 1, 0, 140, 170);
 
-    upper(txt, sizeof(txt), resets);
-    if (txt[0]) {
-        gfx_text(HUB75_WIDTH - 2 - gfx_text_width(txt, 1), top, txt, 1, 90, 90, 110);
+    if (resets[0]) {
+        gfx_text(HUB75_WIDTH - 2 - gfx_text_width(resets, 1), top, resets,
+                 1, 90, 90, 110);
     }
 
     uint8_t r, g, b;
@@ -115,6 +104,55 @@ static void draw_claude(void)
      * is 31 rows tall, and 33 + 25 + 6 = 64. */
     draw_window(0,  "SESSION", u.session_pct, u.session_resets, u.stale);
     draw_window(33, "WEEK",    u.weekly_pct,  u.weekly_resets,  u.stale);
+}
+
+/* Clamped so a bad push cannot scribble a huge number across the row, and so
+ * the compiler can bound the formatted width: without a ceiling it has to
+ * assume nine digits per field. 99:59 is far more than any track. */
+static int clamp_secs(int s)
+{
+    if (s < 0) return 0;
+    if (s > 99 * 60 + 59) return 99 * 60 + 59;
+    return s;
+}
+
+/* Whatever the Mac last pushed. Long titles scroll; short ones sit centred.
+ * The elapsed time is advanced locally between pushes so the bar moves
+ * smoothly instead of stepping once a second. */
+static void draw_nowplaying(void)
+{
+    static int title_off, artist_off;
+    nowplaying_t np;
+
+    hub75_clear();
+
+    if (!nowplaying_get(&np)) {
+        gfx_text_center(20, "NOTHING", 2, 60, 60, 75);
+        gfx_text_center(38, "PLAYING", 2, 60, 60, 75);
+        title_off = artist_off = 0;
+        return;
+    }
+
+    gfx_text_center(0, np.playing ? "NOW PLAYING" : "PAUSED", 1, 0, 140, 170);
+    gfx_marquee(10, np.title,  2, &title_off,  255, 170, 40);
+    gfx_marquee(28, np.artist, 1, &artist_off, 120, 120, 140);
+
+    if (np.duration_s <= 0) return;
+
+    int dur = clamp_secs(np.duration_s);
+    int pos = np.position_s;
+    if (np.playing) {
+        pos += (int)((esp_timer_get_time() - np.updated_us) / 1000000);
+    }
+    pos = clamp_secs(pos);
+    if (pos > dur) pos = dur;
+
+    gfx_bar_track(2, 41, HUB75_WIDTH - 4, 6, pos * 100 / dur, !np.playing);
+
+    char times[24];
+    snprintf(times, sizeof(times), "%d:%02d / %d:%02d",
+             pos / 60, pos % 60, dur / 60, dur % 60);
+    gfx_text_center(52, times, 1, 90, 90, 110);
 }
 
 /* Shown until the network and the clock are both up. Without this the panel
@@ -178,6 +216,11 @@ void app_main(void)
         case SCREEN_CLAUDE:
             draw_claude();
             vTaskDelay(pdMS_TO_TICKS(250));
+            break;
+
+        case SCREEN_NOWPLAYING:
+            draw_nowplaying();
+            vTaskDelay(pdMS_TO_TICKS(50));   /* fast enough to scroll smoothly */
             break;
 
         case SCREEN_VIDEO:

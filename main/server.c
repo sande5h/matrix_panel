@@ -8,6 +8,7 @@
 #include "server.h"
 #include "screen.h"
 #include "usage.h"
+#include "nowplaying.h"
 #include "net.h"
 
 static const char *TAG = "server";
@@ -21,7 +22,7 @@ static void send_state(httpd_req_t *req)
 
     char body[320];
     int n = snprintf(body, sizeof(body),
-        "{\"screen\":\"%s\",\"screens\":[\"clock\",\"claude\",\"video\"],"
+        "{\"screen\":\"%s\",\"screens\":[\"clock\",\"claude\",\"nowplaying\",\"video\"],"
         "\"ip\":\"%s\",\"up_s\":%lld,"
         "\"usage\":{\"valid\":%s,\"stale\":%s,\"session_pct\":%d,\"weekly_pct\":%d,"
         "\"session_resets\":\"%s\",\"weekly_resets\":\"%s\"}}",
@@ -68,6 +69,33 @@ static esp_err_t screen_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* The Mac pushes the current track here. Kept small on purpose: the panel
+ * stores what it is given and never asks anyone for it. */
+static esp_err_t nowplaying_post(httpd_req_t *req)
+{
+    char buf[512];
+    int len = req->content_len;
+    if (len <= 0 || len >= (int)sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body too large");
+        return ESP_FAIL;
+    }
+
+    int got = 0;
+    while (got < len) {
+        int n = httpd_req_recv(req, buf + got, len - got);
+        if (n <= 0) return ESP_FAIL;      /* client vanished mid-body */
+        got += n;
+    }
+    buf[got] = '\0';
+
+    if (!nowplaying_update(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
+        return ESP_FAIL;
+    }
+    send_state(req);
+    return ESP_OK;
+}
+
 /* Deliberately tiny: this is a control panel, not a dashboard. It reads the
  * same JSON the menu bar script does, so the two can never disagree. */
 static const char PAGE[] =
@@ -81,6 +109,7 @@ static const char PAGE[] =
 "<p><button onclick=\"go('/toggle')\">toggle</button>"
 "<button onclick=\"go('/screen?s=clock')\">clock</button>"
 "<button onclick=\"go('/screen?s=claude')\">claude</button>"
+"<button onclick=\"go('/screen?s=nowplaying')\">playing</button>"
 "<button onclick=\"go('/screen?s=video')\">video</button></p>"
 "<pre id=j style='color:#888'></pre>"
 "<script>function show(d){document.getElementById('s').textContent=d.screen;"
@@ -114,6 +143,7 @@ esp_err_t server_start(void)
         { .uri = "/toggle", .method = HTTP_GET,  .handler = toggle_any },
         { .uri = "/toggle", .method = HTTP_POST, .handler = toggle_any },
         { .uri = "/screen", .method = HTTP_GET,  .handler = screen_get_handler },
+        { .uri = "/nowplaying", .method = HTTP_POST, .handler = nowplaying_post },
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         httpd_register_uri_handler(server, &routes[i]);

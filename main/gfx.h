@@ -4,8 +4,9 @@
 
 /* Text on the panel, using the 5x7 font. `scale` is an integer pixel
  * multiplier: 1 is 5x7, 3 is 15x21. Characters are spaced one scaled pixel
- * apart, and anything outside 0x20..0x5A (or lowercase) renders blank, so
- * pass uppercase. */
+ * apart. Lowercase is folded to uppercase automatically -- the font has no
+ * lowercase, and track titles arrive mixed case -- and anything still outside
+ * 0x20..0x5A renders blank. */
 void gfx_char(int x, int y, char c, int scale, uint8_t r, uint8_t g, uint8_t b);
 void gfx_text(int x, int y, const char *s, int scale, uint8_t r, uint8_t g, uint8_t b);
 
@@ -37,3 +38,10 @@ void gfx_level_color(int pct, bool dim, uint8_t *r, uint8_t *g, uint8_t *b);
  * the 59th second. Reads as motion from across the room, where a two digit
  * seconds counter does not. */
 void gfx_seconds_sweep(int sec);
+
+/* Draws s centred if it fits, and scrolls it if it does not. *offset is the
+ * caller's scroll position and is advanced by one pixel per call, so the speed
+ * follows the render tick. Two copies are drawn a gap apart, which is what
+ * makes the wrap seamless rather than a jump back to the start. */
+void gfx_marquee(int y, const char *s, int scale, int *offset,
+                 uint8_t r, uint8_t g, uint8_t b);

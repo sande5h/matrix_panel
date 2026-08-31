@@ -8,6 +8,7 @@
 typedef enum {
     SCREEN_CLOCK = 0,   /* minute sweep, date, time, quota bars */
     SCREEN_CLAUDE,      /* both quota windows, with countdowns */
+    SCREEN_NOWPLAYING,  /* whatever the Mac pushed to /nowplaying */
     SCREEN_VIDEO,       /* the clip in the video partition */
     SCREEN_COUNT
 } screen_t;
@@ -15,5 +16,5 @@ typedef enum {
 screen_t    screen_get(void);
 void        screen_set(screen_t s);
 screen_t    screen_next(void);            /* advance and return the new one */
-const char *screen_name(screen_t s);      /* "clock", "claude", "video" */
+const char *screen_name(screen_t s);      /* "clock", "claude", "nowplaying", "video" */
 bool        screen_from_name(const char *name, screen_t *out);

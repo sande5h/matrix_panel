@@ -143,14 +143,20 @@ can never disagree about what is on screen.
 ### Menu bar item
 
 `tools/matrix_panel.lua` is a Hammerspoon module: left click toggles, the
-dropdown selects a screen directly, and the icon shows what is playing
-(🕒 clock, 🎞 video, ▪️ unreachable). Install it with:
+dropdown selects a screen directly, and the icon shows what is playing. Install
+it with:
 
 ```
 cp tools/matrix_panel.lua ~/.hammerspoon/
+cp -r tools/icons ~/.hammerspoon/
 # then add to ~/.hammerspoon/init.lua:
 #   pcall(require, "matrix_panel")
 ```
+
+The icons are loaded as template images, so macOS tints them to match the menu
+bar and they invert properly in dark mode. If one fails to load the item falls
+back to a text glyph rather than going invisible. Artwork from icons8, whose
+free tier asks for a link back.
 
 It polls `/status` every 30 s, so the icon tracks changes made from the web
 page or after a panel reboot.

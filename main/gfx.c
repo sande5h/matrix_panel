@@ -8,6 +8,7 @@
 
 void gfx_char(int x, int y, char c, int scale, uint8_t r, uint8_t g, uint8_t b)
 {
+    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
     if (c < FONT5X7_FIRST || c > FONT5X7_LAST) return;
     const uint8_t *glyph = font5x7[(int)c - FONT5X7_FIRST];
 
@@ -107,4 +108,21 @@ void gfx_seconds_sweep(int sec)
     /* +1 so the row is never empty at :00 and reaches the full width at :59. */
     int len = (sec + 1) * HUB75_WIDTH / 60;
     for (int x = 0; x < len; x++) hub75_set_pixel(x, 0, 0, 200, 80);
+}
+
+void gfx_marquee(int y, const char *s, int scale, int *offset,
+                 uint8_t r, uint8_t g, uint8_t b)
+{
+    int w = gfx_text_width(s, scale);
+    if (w <= HUB75_WIDTH) {
+        gfx_text((HUB75_WIDTH - w) / 2, y, s, scale, r, g, b);
+        *offset = 0;
+        return;
+    }
+
+    int span = w + 8 * scale;          /* the gap between the two copies */
+    int off = *offset % span;
+    gfx_text(-off, y, s, scale, r, g, b);
+    gfx_text(-off + span, y, s, scale, r, g, b);
+    *offset = off + 1;
 }
