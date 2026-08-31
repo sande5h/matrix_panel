@@ -157,10 +157,24 @@ void app_main(void)
     draw_persistence_test();
     draw_channel_test();
 
+    /* The plasma is the one thing known to display. So run it, then STOP
+     * drawing and leave the last frame sitting in the buffer. If a frozen
+     * plasma vanishes, the panel only ever shows content while the CPU is
+     * writing to the buffer -- which is a driver problem, not a pattern or a
+     * power problem. If a frozen plasma stays on screen, the buffer is fine
+     * and the earlier blank test frames were about what was drawn. */
     int64_t t0 = esp_timer_get_time();
     while (1) {
-        float t = (esp_timer_get_time() - t0) / 1e6f;
-        draw_plasma(t);
-        vTaskDelay(pdMS_TO_TICKS(20));
+        ESP_LOGI(TAG, "=== ANIMATING 3 s: expect a moving plasma ===");
+        int64_t t_end = esp_timer_get_time() + 3000000LL;
+        while (esp_timer_get_time() < t_end) {
+            draw_plasma((esp_timer_get_time() - t0) / 1e6f);
+            ESP_LOGI(TAG, "  animating  frames=%lu  %.0f Hz",
+                     (unsigned long)hub75_frame_count(), hub75_refresh_hz());
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+
+        ESP_LOGI(TAG, "=== FROZEN 3 s: expect the SAME plasma, motionless ===");
+        hold("frozen", 3000, NULL);
     }
 }
