@@ -32,14 +32,35 @@ def main():
                          "smaller, decoded on the ESP32 with the ROM tjpgd")
     ap.add_argument("--quality", type=int, default=7,
                     help="ffmpeg -q:v for --mjpeg, 2 best .. 31 worst")
+    ap.add_argument("--fit", choices=("pad", "crop"), default="pad",
+                    help="pad letterboxes the whole frame; crop fills the panel "
+                         "and throws away the overflow. A portrait source needs "
+                         "crop, or it lands as a narrow strip")
+    ap.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0,
+                    help="rotate before fitting, for a panel mounted on its side")
     ap.add_argument("--width", type=int, default=WIDTH)
     ap.add_argument("--height", type=int, default=HEIGHT)
     args = ap.parse_args()
 
-    # Letterbox rather than distort: scale to fit, then pad to the exact size.
-    vf = (f"fps={args.fps},"
-          f"scale={args.width}:{args.height}:force_original_aspect_ratio=decrease:flags=lanczos,"
-          f"pad={args.width}:{args.height}:(ow-iw)/2:(oh-ih)/2")
+    steps = [f"fps={args.fps}"]
+    if args.rotate == 90:
+        steps.append("transpose=1")          # clockwise
+    elif args.rotate == 270:
+        steps.append("transpose=2")          # counter-clockwise
+    elif args.rotate == 180:
+        steps.append("hflip,vflip")
+
+    if args.fit == "crop":
+        # Fill the panel, then cut the overflow off the centre.
+        steps.append(f"scale={args.width}:{args.height}"
+                     f":force_original_aspect_ratio=increase:flags=lanczos")
+        steps.append(f"crop={args.width}:{args.height}")
+    else:
+        # Keep the whole frame and letterbox it. Never distorts.
+        steps.append(f"scale={args.width}:{args.height}"
+                     f":force_original_aspect_ratio=decrease:flags=lanczos")
+        steps.append(f"pad={args.width}:{args.height}:(ow-iw)/2:(oh-ih)/2")
+    vf = ",".join(steps)
 
     base = ["ffmpeg", "-v", "error"]
     if args.start:                      # before -i, so ffmpeg seeks rather than decodes
