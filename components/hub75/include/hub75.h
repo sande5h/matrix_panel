@@ -41,6 +41,15 @@ extern "C" {
  * onto other addresses; each extra word costs a little refresh rate. */
 #define HUB75_OE_GUARD 2
 
+/* The six colour data pins, so a caller can name them when diagnosing wiring.
+ * These mirror the PIN_* defines in hub75.c and must be changed with them. */
+#define PIN_CHECK_R1 4
+#define PIN_CHECK_G1 9
+#define PIN_CHECK_B1 5
+#define PIN_CHECK_R2 6
+#define PIN_CHECK_G2 10
+#define PIN_CHECK_B2 7
+
 /* Configures the i80 bus and allocates the DMA refresh buffer. Does not start
  * scanning yet -- call hub75_start(). */
 esp_err_t hub75_init(void);
