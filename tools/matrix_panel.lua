@@ -14,7 +14,7 @@ local lastScreen = nil
 
 -- The icons carry the state: one glance at the menu bar says what the panel
 -- is showing, without opening anything.
-local ICONS = { clock = "🕒", video = "🎞", offline = "▪️" }
+local ICONS = { clock = "🕒", claude = "📊", video = "🎞", offline = "▪️" }
 
 local function setState(screen)
     lastScreen = screen
@@ -67,6 +67,7 @@ if menu then
             { title = "Toggle", fn = toggle },
             { title = "-" },
             item("clock", "Clock"),
+            item("claude", "Claude quota"),
             item("video", "Video"),
             { title = "-" },
             { title = "Open control page", fn = function()

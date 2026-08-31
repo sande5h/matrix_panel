@@ -24,6 +24,15 @@ void gfx_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b);
  * room, which is all these rows need to do. */
 void gfx_bar_full(int y, int height, int pct, bool dim);
 
+/* A bar that draws its unfilled remainder in a dim grey. Floating away from
+ * the panel edge there is no reference for where 100% would be, so without the
+ * track you cannot tell 40% from 80% at a glance. */
+void gfx_bar_track(int x, int y, int w, int height, int pct, bool dim);
+
+/* The green-amber-red used for every quota reading, so the two screens can
+ * never drift apart. */
+void gfx_level_color(int pct, bool dim, uint8_t *r, uint8_t *g, uint8_t *b);
+
 /* The top row as a minute sweep: a line growing left to right, full width at
  * the 59th second. Reads as motion from across the room, where a two digit
  * seconds counter does not. */

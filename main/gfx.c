@@ -63,18 +63,37 @@ void gfx_rect(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b)
     }
 }
 
+void gfx_level_color(int pct, bool dim, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    /* Green while there is room, amber as it tightens, red near the limit --
+     * readable at a glance, which a number is not. */
+    if (pct < 60)      { *r = 0;   *g = 200; *b = 60;  }
+    else if (pct < 85) { *r = 255; *g = 170; *b = 0;   }
+    else               { *r = 255; *g = 40;  *b = 40;  }
+    if (dim) { *r /= 3; *g /= 3; *b /= 3; }
+}
+
+void gfx_bar_track(int x, int y, int w, int height, int pct, bool dim)
+{
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+
+    gfx_fill_rect(x, y, w, height, 18, 18, 26);      /* the empty remainder */
+
+    uint8_t r, g, b;
+    gfx_level_color(pct, dim, &r, &g, &b);
+    int len = w * pct / 100;
+    if (pct > 0 && len < 1) len = 1;                 /* 1% must still show */
+    if (len > 0) gfx_fill_rect(x, y, len, height, r, g, b);
+}
+
 void gfx_bar_full(int y, int height, int pct, bool dim)
 {
     if (pct <= 0) return;               /* nothing to show, so show nothing */
     if (pct > 100) pct = 100;
 
-    /* Green while there is room, amber as it tightens, red near the limit --
-     * readable at a glance, which a number is not. */
     uint8_t r, g, b;
-    if (pct < 60)      { r = 0;   g = 200; b = 60;  }
-    else if (pct < 85) { r = 255; g = 170; b = 0;   }
-    else               { r = 255; g = 40;  b = 40;  }
-    if (dim) { r /= 3; g /= 3; b /= 3; }
+    gfx_level_color(pct, dim, &r, &g, &b);
 
     int len = HUB75_WIDTH * pct / 100;
     if (len < 1) len = 1;               /* 1% must still be visible */
