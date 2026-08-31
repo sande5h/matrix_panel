@@ -6,8 +6,16 @@
 
 local M = {}
 
-local HOST    = "matrix-panel.local:8088"
-local TIMEOUT = 3   -- seconds; the panel is on the LAN, so this is generous
+local MDNS_HOST = "matrix-panel.local:8088"
+
+-- mDNS resolves inconsistently here: ping finds the panel, curl often times
+-- out on the same name. Every response carries the panel's own IP, so the
+-- first success pins it and later calls skip name resolution entirely. A
+-- failure drops back to the name, which is what recovers after DHCP moves it.
+local pinnedHost = nil
+local function host()
+    return pinnedHost or MDNS_HOST
+end
 
 local menu = hs.menubar.new()
 local lastScreen = nil
@@ -34,7 +42,8 @@ local ICONS = {
 
 -- Text stands in if an image is missing, so a bad path degrades to a working
 -- menu bar item rather than an invisible one.
-local GLYPHS = { clock = "🕒", claude = "📊", video = "🎞", offline = "▪️" }
+local GLYPHS = { clock = "🕒", claude = "📊", nowplaying = "🎵",
+                 video = "🎞", offline = "▪️" }
 
 local function setState(screen)
     lastScreen = screen
@@ -56,13 +65,17 @@ end
 -- the same JSON for all of them, so one handler keeps the menu bar in step
 -- whatever we asked for.
 local function call(path, andThen)
-    hs.http.asyncGet("http://" .. HOST .. path, nil, function(status, body)
+    hs.http.asyncGet("http://" .. host() .. path, nil, function(status, body)
         if status ~= 200 then
+            pinnedHost = nil          -- fall back to the name next time
             setState(nil)
             return
         end
         local ok, data = pcall(hs.json.decode, body)
         if ok and data and data.screen then
+            if data.ip and data.ip ~= "0.0.0.0" then
+                pinnedHost = data.ip .. ":8088"
+            end
             setState(data.screen)
             if andThen then andThen(data) end
         end
@@ -97,10 +110,11 @@ if menu then
             { title = "-" },
             item("clock", "Clock"),
             item("claude", "Claude quota"),
+            item("nowplaying", "Now playing"),
             item("video", "Video"),
             { title = "-" },
             { title = "Open control page", fn = function()
-                hs.urlevent.openURL("http://" .. HOST .. "/")
+                hs.urlevent.openURL("http://" .. host() .. "/")
             end },
             { title = "Refresh", fn = refresh },
         }
@@ -155,7 +169,7 @@ local function push(np)
     if body == lastPayload and (now - lastPush) < 10 then return end
     lastPayload, lastPush = body, now
 
-    hs.http.asyncPost("http://" .. HOST .. "/nowplaying", body,
+    hs.http.asyncPost("http://" .. host() .. "/nowplaying", body,
                       { ["Content-Type"] = "application/json" }, function() end)
 end
 

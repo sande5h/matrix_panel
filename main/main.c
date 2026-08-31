@@ -53,6 +53,16 @@ static void draw_clock(void)
     gfx_text_center(5,  date, 1, 0, 140, 170);
     gfx_text_center(19, hhmm, 3, 255, 170, 40);
 
+    /* Whatever is playing, in the gap between the time and the quota bars.
+     * Nothing playing leaves the row empty rather than reserving space for it. */
+    static int np_off;
+    nowplaying_t np;
+    if (nowplaying_get(&np)) {
+        gfx_marquee(42, np.title, 1, &np_off, 130, 130, 145);
+    } else {
+        np_off = 0;
+    }
+
     /* Claude quota along the bottom: the five hour window, a four row gap,
      * then the seven day window on the last four rows. No labels and no
      * numbers -- the length is the reading. Blank until the first poll lands,
@@ -234,7 +244,10 @@ void app_main(void)
         case SCREEN_CLOCK:
         default:
             draw_clock();
-            vTaskDelay(pdMS_TO_TICKS(100));
+            /* 20 Hz rather than 10: the clock itself does not need it, but the
+             * track title scrolls a pixel per frame and 10 px/s reads as a
+             * stutter. */
+            vTaskDelay(pdMS_TO_TICKS(50));
             break;
         }
 
