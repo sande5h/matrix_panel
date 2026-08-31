@@ -149,50 +149,56 @@ static void __attribute__((unused)) draw_channel_test(void)
     hub75_clear();
 }
 
-/* A frozen plasma stays on screen, so the buffer and the DMA refresh are both
- * fine. What is left is either the content or the current a solid fill draws.
- * This rotation puts all of it side by side in one run: watch which steps are
- * visible and tell them apart by the log line. */
+static int s_line_row = -1, s_line_col = -1;
+
+static void draw_lines(void)
+{
+    hub75_clear();
+    if (s_line_row >= 0) {
+        for (int x = 0; x < HUB75_WIDTH; x++) hub75_set_pixel(x, s_line_row, 255, 255, 255);
+    }
+    if (s_line_col >= 0) {
+        for (int y = 0; y < HUB75_HEIGHT; y++) hub75_set_pixel(s_line_col, y, 255, 255, 255);
+    }
+}
+
+static void one_line(const char *what, int row, int col, int ms)
+{
+    s_line_row = row;
+    s_line_col = col;
+    ESP_LOGI(TAG, "=== %s ===", what);
+    hold(what, ms, draw_lines);
+}
+
+/* Geometry probe. The border showed an extra line through the middle, so walk
+ * single lines one at a time: a lone line that shows up twice, or lands in the
+ * wrong place, says exactly how the row/column mapping is off. */
 void app_main(void)
 {
     ESP_ERROR_CHECK(hub75_init());
     ESP_ERROR_CHECK(hub75_start());
 
+    /* Full white at 255 flashes because of supply sag, so stay off that. */
+    hub75_set_brightness(128);
+
     int64_t t0 = esp_timer_get_time();
     while (1) {
-        ESP_LOGI(TAG, "=== 1. plasma, animating -- known good ===");
+        one_line("row 0 only -- top edge, nothing else",        0,  -1, 2500);
+        one_line("row 31 only -- last row of the TOP half",     31, -1, 2500);
+        one_line("row 32 only -- first row of the BOTTOM half", 32, -1, 2500);
+        one_line("row 63 only -- bottom edge",                  63, -1, 2500);
+        one_line("column 0 only -- left edge",                  -1,  0, 2500);
+        one_line("column 64 only -- middle column",             -1, 64, 2500);
+        one_line("column 127 only -- right edge",               -1, 127, 2500);
+
+        ESP_LOGI(TAG, "=== full border, brightness 128 ===");
+        hold("border", 3000, draw_border);
+
+        ESP_LOGI(TAG, "=== plasma ===");
         int64_t t_end = esp_timer_get_time() + 3000000LL;
         while (esp_timer_get_time() < t_end) {
             draw_plasma((esp_timer_get_time() - t0) / 1e6f);
             vTaskDelay(pdMS_TO_TICKS(20));
         }
-
-        ESP_LOGI(TAG, "=== 2. plasma, frozen -- known good ===");
-        hold("frozen plasma", 3000, NULL);
-
-        /* Same plasma, then clear(). Isolates clear() itself: everything that
-         * was blank in the old tests called it first, and the plasma never
-         * did. */
-        ESP_LOGI(TAG, "=== 3. plasma then clear() -- expect black ===");
-        hub75_clear();
-        hold("after clear", 2000, NULL);
-
-        /* Lowest current pattern there is. If this is blank, it is not power. */
-        ESP_LOGI(TAG, "=== 4. 1px white border, ~380 LEDs ===");
-        hold("border", 3000, draw_border);
-
-        s_pat_y0 = 0;
-        s_pat_y1 = HUB75_HEIGHT;
-        s_pat_r = s_pat_g = s_pat_b = 255;
-
-        ESP_LOGI(TAG, "=== 5. full white at 12%% brightness ===");
-        hub75_set_brightness(32);
-        hold("white, dim", 3000, draw_half);
-
-        ESP_LOGI(TAG, "=== 6. full white at 100%% brightness ===");
-        hub75_set_brightness(255);
-        hold("white, bright", 3000, draw_half);
-
-        hub75_set_brightness(160);
     }
 }
