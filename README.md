@@ -97,10 +97,18 @@ idf.py build flash monitor
 
 ## Status
 
-Working on hardware: a Q2.5AB32V4 128x64 P2.5 panel driven by an ESP32-S3
-N16R8 at 12 MHz, ~488 Hz refresh.
+Working on hardware: a Q2.5AB32V4 128x64 P2.5 panel driven by an ESP32-S3 at
+12 MHz, ~488 Hz refresh.
 
 Notes from bringing it up:
+
+- **Check `CONFIG_ESPTOOLPY_FLASHSIZE` against your module.** The boot log
+  prints the detected size and warns if the image header disagrees.
+- A whole colour channel dead in one half of the panel is one wire: the top
+  half is R1/G1/B1, the bottom half R2/G2/B2. Drive that half solid in that
+  colour and the data pin sits at a steady level a multimeter can read -- 3.3 V
+  if the pin is driving, and 8 kOhm to ground at a healthy panel input. That
+  found a damaged GPIO here, not a wiring fault.
 
 - On a HUB75E connector the latch is labelled **LE**, not LAT. Same signal.
 - Full white at brightness 255 flashes on a modest supply -- that is the panel

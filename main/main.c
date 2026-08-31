@@ -76,43 +76,12 @@ static void self_test(void)
     hub75_clear();
 }
 
-/* Holds a solid fill long enough to meter the data pins. A channel's data bit
- * is set in every word of every block while its half is solid, so the pin sits
- * at a steady level a multimeter can read -- no scope needed. Brightness does
- * not matter here: it modulates OE, not the data lines. */
-static void pin_check(void)
-{
-    const struct { int half; uint8_t r, g, b; const char *sig; int gpio; } steps[] = {
-        {0, 255, 0, 0, "R1", 4},
-        {1, 255, 0, 0, "R2", 6},
-        {0, 0, 255, 0, "G1", 9},
-    };
-    for (int i = 0; i < 3; i++) {
-        ESP_LOGI(TAG, "PIN CHECK: %s -- GPIO %d should read ~3.3 V for 10 s "
-                      "(every other data pin ~0 V)", steps[i].sig, steps[i].gpio);
-        hub75_clear();
-        int y0 = steps[i].half ? HUB75_ROWS : 0;
-        int y1 = steps[i].half ? HUB75_HEIGHT : HUB75_ROWS;
-        for (int y = y0; y < y1; y++) {
-            for (int x = 0; x < HUB75_WIDTH; x++) {
-                hub75_set_pixel(x, y, steps[i].r, steps[i].g, steps[i].b);
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(10000));
-    }
-
-    ESP_LOGI(TAG, "PIN CHECK: cleared -- every data pin should read ~0 V for 5 s");
-    hub75_clear();
-    vTaskDelay(pdMS_TO_TICKS(5000));
-}
-
 void app_main(void)
 {
     ESP_ERROR_CHECK(hub75_init());
     ESP_ERROR_CHECK(hub75_start());
     hub75_set_brightness(128);
 
-    pin_check();
     self_test();
 
     int64_t t0 = esp_timer_get_time();
