@@ -1,4 +1,6 @@
-#include <math.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -6,116 +8,61 @@
 #include "esp_timer.h"
 
 #include "hub75.h"
+#include "gfx.h"
+#include "net.h"
 #include "video.h"
+#include "tests.h"
 
 static const char *TAG = "main";
 
-/* Both default off so a boot goes straight to playback. Turn them on while
-   wiring or after swapping boards.
-
-   PIN_CHECK holds each half in each primary for 5 s, long enough to meter the
-   data pin, naming the GPIO in the log. SELF_TEST is the shorter confidence
-   check: each half in each primary, then a border. */
+/* Boot-time hardware checks, off by default. PIN_CHECK holds each half in each
+   primary for 5 s, long enough to meter the data pin; SELF_TEST is the shorter
+   confidence check. Turn either on while wiring or after swapping boards. */
 #define PIN_CHECK 0
 #define SELF_TEST 0
 
-/* 6 bit hue -> RGB, no saturation/value control, just enough for a demo. */
-static void hue_rgb(uint8_t hue, uint8_t *r, uint8_t *g, uint8_t *b)
-{
-    uint8_t seg = hue / 43;
-    uint8_t off = (uint8_t)((hue - seg * 43) * 6);
-    switch (seg) {
-        case 0:  *r = 255;       *g = off;       *b = 0;         break;
-        case 1:  *r = 255 - off; *g = 255;       *b = 0;         break;
-        case 2:  *r = 0;         *g = 255;       *b = off;       break;
-        case 3:  *r = 0;         *g = 255 - off; *b = 255;       break;
-        case 4:  *r = off;       *g = 0;         *b = 255;       break;
-        default: *r = 255;       *g = 0;         *b = 255 - off; break;
-    }
-}
+/* Play a flashed clip instead of the clock. */
+#define SHOW_VIDEO 0
 
-/* A plasma field -- exercises every colour bit on every pixel. */
-static void draw_plasma(float t)
-{
-    for (int y = 0; y < HUB75_HEIGHT; y++) {
-        for (int x = 0; x < HUB75_WIDTH; x++) {
-            float v = sinf(x * 0.18f + t)
-                    + sinf(y * 0.14f - t * 0.8f)
-                    + sinf((x + y) * 0.11f + t * 0.5f)
-                    + sinf(sqrtf((float)((x - HUB75_WIDTH / 2) * (x - HUB75_WIDTH / 2) +
-                                         (y - HUB75_HEIGHT / 2) * (y - HUB75_HEIGHT / 2))) * 0.22f - t);
-            uint8_t hue = (uint8_t)((v + 4.0f) * (255.0f / 8.0f));
-            uint8_t r, g, b;
-            hue_rgb(hue, &r, &g, &b);
-            hub75_set_pixel(x, y, r, g, b);
-        }
-    }
-}
+static const char *const DAYS[]   = {"SUN","MON","TUE","WED","THU","FRI","SAT"};
+static const char *const MONTHS[] = {"JAN","FEB","MAR","APR","MAY","JUN",
+                                     "JUL","AUG","SEP","OCT","NOV","DEC"};
 
-/* Quick confidence check at boot: each half in each primary, then a border
- * whose edges must land on the outermost rows and columns. */
-static void __attribute__((unused)) self_test(void)
+/* ---- the clock face -----------------------------------------------------
+ * 128x64 in three bands: date across the top, the hours and minutes big in
+ * the middle, seconds underneath. The colon blinks once a second, which is
+ * also the cheapest proof the display is still being updated. */
+static void draw_clock(void)
 {
-    const struct { uint8_t r, g, b; const char *name; } chans[] = {
-        {255, 0, 0, "red"}, {0, 255, 0, "green"}, {0, 0, 255, "blue"},
-    };
-    for (int half = 0; half < 2; half++) {
-        for (int c = 0; c < 3; c++) {
-            ESP_LOGI(TAG, "%s half %s", half ? "bottom" : "top", chans[c].name);
-            hub75_clear();
-            for (int y = half ? HUB75_ROWS : 0; y < (half ? HUB75_HEIGHT : HUB75_ROWS); y++) {
-                for (int x = 0; x < HUB75_WIDTH; x++) {
-                    hub75_set_pixel(x, y, chans[c].r, chans[c].g, chans[c].b);
-                }
-            }
-            vTaskDelay(pdMS_TO_TICKS(600));
-        }
-    }
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
 
-    ESP_LOGI(TAG, "border");
+    char date[16], hhmm[8], secs[4];
+    snprintf(date, sizeof(date), "%s %02d %s",
+             DAYS[tm.tm_wday % 7], tm.tm_mday, MONTHS[tm.tm_mon % 12]);
+    snprintf(hhmm, sizeof(hhmm), "%02d%c%02d",
+             tm.tm_hour, (tm.tm_sec & 1) ? ' ' : ':', tm.tm_min);
+    snprintf(secs, sizeof(secs), "%02d", tm.tm_sec);
+
     hub75_clear();
-    for (int x = 0; x < HUB75_WIDTH; x++) {
-        hub75_set_pixel(x, 0, 255, 255, 255);
-        hub75_set_pixel(x, HUB75_HEIGHT - 1, 255, 255, 255);
-    }
-    for (int y = 0; y < HUB75_HEIGHT; y++) {
-        hub75_set_pixel(0, y, 255, 255, 255);
-        hub75_set_pixel(HUB75_WIDTH - 1, y, 255, 255, 255);
-    }
-    vTaskDelay(pdMS_TO_TICKS(1500));
-    hub75_clear();
+    gfx_text_center(3,  date, 1, 0,   140, 170);
+    gfx_text_center(15, hhmm, 3, 255, 170, 40);
+    gfx_text_center(44, secs, 2, 90,  90,  110);
 }
 
-#if PIN_CHECK
-/* A channel's data bit is set in every word of every block while its half is
- * solid, so the pin sits at a steady level a multimeter reads directly -- no
- * scope needed. ~3.3 V means the S3 is driving it; ~0 V means it is not.
- * Brightness is irrelevant here: it modulates OE, not the data lines. */
-static void pin_check(void)
+/* Shown until the network and the clock are both up. Without this the panel
+ * would sit dark through a slow DHCP and look broken. */
+static void draw_status(const char *line1, const char *line2, int spin)
 {
-    const struct { int half; uint8_t r, g, b; const char *sig; int gpio; } steps[] = {
-        {0, 255, 0, 0, "R1", PIN_CHECK_R1}, {0, 0, 255, 0, "G1", PIN_CHECK_G1},
-        {0, 0, 0, 255, "B1", PIN_CHECK_B1}, {1, 255, 0, 0, "R2", PIN_CHECK_R2},
-        {1, 0, 255, 0, "G2", PIN_CHECK_G2}, {1, 0, 0, 255, "B2", PIN_CHECK_B2},
-    };
-    for (int i = 0; i < 6; i++) {
-        ESP_LOGI(TAG, "PIN CHECK %s: GPIO %d should read ~3.3 V for 5 s "
-                      "(all other data pins ~0 V)", steps[i].sig, steps[i].gpio);
-        hub75_clear();
-        int y0 = steps[i].half ? HUB75_ROWS : 0;
-        int y1 = steps[i].half ? HUB75_HEIGHT : HUB75_ROWS;
-        for (int y = y0; y < y1; y++) {
-            for (int x = 0; x < HUB75_WIDTH; x++) {
-                hub75_set_pixel(x, y, steps[i].r, steps[i].g, steps[i].b);
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(5000));
-    }
-    ESP_LOGI(TAG, "PIN CHECK done: cleared, every data pin should read ~0 V");
+    static const char dots[][4] = {"", ".", "..", "..."};
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%s%s", line1, dots[spin & 3]);
+
     hub75_clear();
-    vTaskDelay(pdMS_TO_TICKS(3000));
+    gfx_text_center(18, buf, 2, 255, 170, 40);
+    if (line2) gfx_text_center(42, line2, 1, 0, 140, 170);
 }
-#endif
 
 void app_main(void)
 {
@@ -130,20 +77,39 @@ void app_main(void)
     self_test();
 #endif
 
-    /* A flashed clip wins; the plasma is the fallback when there is none. */
+#if SHOW_VIDEO
     if (video_play(true)) return;
-    ESP_LOGI(TAG, "no clip flashed, running the plasma instead");
+    ESP_LOGW(TAG, "no clip flashed, falling back to the clock");
+#endif
 
-    int64_t t0 = esp_timer_get_time();
+    ESP_ERROR_CHECK(net_start());
+
+    for (int spin = 0; !net_connected(); spin++) {
+        draw_status("WIFI", NULL, spin);
+        vTaskDelay(pdMS_TO_TICKS(400));
+    }
+    draw_status("NET OK", net_ip(), 0);
+    vTaskDelay(pdMS_TO_TICKS(1500));
+
+    for (int spin = 0; !net_time_valid(); spin++) {
+        draw_status("SYNC", NULL, spin);
+        if (net_sync_time(10000) != ESP_OK) {
+            ESP_LOGW(TAG, "retrying time sync");
+        }
+    }
+
+    ESP_LOGI(TAG, "clock running");
     int64_t next_log = 0;
     while (1) {
+        draw_clock();
+
         int64_t now = esp_timer_get_time();
-        draw_plasma((now - t0) / 1e6f);
         if (now >= next_log) {          /* periodic heartbeat, not change gated */
-            ESP_LOGI(TAG, "refresh %.0f Hz, %lu frames",
-                     hub75_refresh_hz(), (unsigned long)hub75_frame_count());
-            next_log = now + 5000000LL;
+            ESP_LOGI(TAG, "refresh %.0f Hz, ip %s, wifi %s",
+                     hub75_refresh_hz(), net_ip(),
+                     net_connected() ? "up" : "down");
+            next_log = now + 30000000LL;
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

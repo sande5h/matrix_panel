@@ -8,3 +8,4 @@ dependencies.lock
 .DS_Store
 demo_video.bin
 *.bin
+main/secrets.h
