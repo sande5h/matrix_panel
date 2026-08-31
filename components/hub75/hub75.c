@@ -5,6 +5,8 @@
 #include "freertos/task.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_io_i80.h"
+#include "hal/lcd_periph.h"
+#include "esp_rom_gpio.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
@@ -61,7 +63,14 @@ static const char *TAG = "hub75";
 #define MASK_RGB  (0x3F << BIT_R1)          /* bits 0..5  */
 #define MASK_ADDR (0x1F << BIT_A)           /* bits 6..10 */
 #define MASK_LAT  (1u << BIT_LAT)
-#define MASK_OE   (1u << BIT_OE)            /* active low: 1 = panel blanked */
+
+/* HUB75 OE is active low, so a word of all zeros would light the panel at
+ * address 0 -- and the i80 peripheral emits exactly that during the blank
+ * clock at each end of every transaction, which showed up as a bright row 0
+ * and row 32 carrying whatever was latched at the time. The OE pin is
+ * therefore inverted in the GPIO matrix (see hub75_init), which makes zero
+ * mean blanked. In the buffer this bit now reads "lit". */
+#define MASK_OE   (1u << BIT_OE)            /* set = panel lit */
 
 /* --------------------------------------------------------------- layout */
 /* One block = one (row, plane) pair, and it is exactly WIDTH clocks long.
@@ -144,8 +153,8 @@ static void apply_oe(void)
         uint16_t *w = &s_buf[BLOCK_BASE(k)];
         for (int i = 0; i < BLOCK_WORDS; i++) {
             bool lit = (i >= OE_GUARD) && (i < OE_GUARD + on);
-            if (lit) w[i] &= (uint16_t)~MASK_OE;   /* enabled */
-            else     w[i] |=  MASK_OE;             /* blanked */
+            if (lit) w[i] |=  MASK_OE;
+            else     w[i] &= (uint16_t)~MASK_OE;
         }
     }
 }
@@ -225,6 +234,12 @@ esp_err_t hub75_init(void)
         },
     };
     ESP_RETURN_ON_ERROR(esp_lcd_new_i80_bus(&bus_cfg, &s_bus), TAG, "i80 bus failed");
+
+    /* Re-route OE through the GPIO matrix inverted, so that an all-zero word
+     * blanks the panel instead of lighting address 0. The i80 bus is bus 0;
+     * the S3 only has one. */
+    esp_rom_gpio_connect_out_signal(PIN_OE, soc_lcd_i80_signals[0].data_sigs[BIT_OE],
+                                    true /* invert */, false);
 
     esp_lcd_panel_io_i80_config_t io_cfg = {
         .cs_gpio_num        = -1,            /* exclusive use of the bus */
