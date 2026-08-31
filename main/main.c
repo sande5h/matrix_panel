@@ -13,6 +13,8 @@
 #include "video.h"
 #include "tests.h"
 #include "usage.h"
+#include "screen.h"
+#include "server.h"
 
 static const char *TAG = "main";
 
@@ -59,6 +61,52 @@ static void draw_clock(void)
     }
 }
 
+/* The font covers 0x20..0x5A, so anything shown from the server -- "4h 59m"
+ * and friends -- has to be folded to uppercase first. */
+static void upper(char *dst, size_t n, const char *src)
+{
+    size_t i = 0;
+    for (; src[i] && i + 1 < n; i++) {
+        char c = src[i];
+        dst[i] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+    }
+    dst[i] = '\0';
+}
+
+/* The quota, given the whole panel: the five hour window as a big percentage
+ * because that is the one that bites, the seven day window as a bar. */
+static void draw_usage(void)
+{
+    usage_t u;
+    hub75_clear();
+
+    if (!usage_get(&u)) {
+        gfx_text_center(16, "CLAUDE", 2, 0, 140, 170);
+        gfx_text_center(38, "NO DATA", 1, 120, 120, 130);
+        return;
+    }
+
+    char pct[8], resets[16];
+    snprintf(pct, sizeof(pct), "%d%%", u.session_pct);
+
+    uint8_t r, g, b;
+    if (u.session_pct < 60)      { r = 0;   g = 200; b = 60; }
+    else if (u.session_pct < 85) { r = 255; g = 170; b = 0;  }
+    else                         { r = 255; g = 40;  b = 40; }
+    if (u.stale) { r /= 3; g /= 3; b /= 3; }
+
+    gfx_text_center(1, "SESSION", 1, 0, 140, 170);
+    gfx_text_center(9, pct, 3, r, g, b);
+
+    upper(resets, sizeof(resets), u.session_resets);
+    gfx_text_center(32, resets, 1, 90, 90, 110);
+
+    gfx_bar(42, 'W', u.weekly_pct, u.stale);
+
+    upper(resets, sizeof(resets), u.weekly_resets);
+    gfx_text_center(55, resets, 1, 90, 90, 110);
+}
+
 /* Shown until the network and the clock are both up. Without this the panel
  * would sit dark through a slow DHCP and look broken. */
 static void draw_status(const char *line1, const char *line2, int spin)
@@ -70,6 +118,12 @@ static void draw_status(const char *line1, const char *line2, int spin)
     hub75_clear();
     gfx_text_center(18, buf, 2, 255, 170, 40);
     if (line2) gfx_text_center(42, line2, 1, 0, 140, 170);
+}
+
+/* Checked once per video frame so a screen change interrupts playback. */
+static bool on_video_screen(void)
+{
+    return screen_get() == SCREEN_VIDEO;
 }
 
 void app_main(void)
@@ -86,8 +140,7 @@ void app_main(void)
 #endif
 
 #if SHOW_VIDEO
-    if (video_play(true)) return;
-    ESP_LOGW(TAG, "no clip flashed, falling back to the clock");
+    screen_set(SCREEN_VIDEO);
 #endif
 
     ESP_ERROR_CHECK(net_start());
@@ -97,6 +150,7 @@ void app_main(void)
         draw_status("WIFI", NULL, spin);
         vTaskDelay(pdMS_TO_TICKS(400));
     }
+    ESP_ERROR_CHECK(server_start());
     draw_status("NET OK", net_ip(), 0);
     vTaskDelay(pdMS_TO_TICKS(1500));
 
@@ -107,17 +161,36 @@ void app_main(void)
         }
     }
 
-    ESP_LOGI(TAG, "clock running");
+    ESP_LOGI(TAG, "running, control API on http://%s:8088/", net_ip());
     int64_t next_log = 0;
     while (1) {
-        draw_clock();
+        switch (screen_get()) {
+        case SCREEN_USAGE:
+            draw_usage();
+            vTaskDelay(pdMS_TO_TICKS(250));
+            break;
+
+        case SCREEN_VIDEO:
+            /* Blocks until the clip ends or the screen changes under it. */
+            if (!video_play(true, on_video_screen)) {
+                ESP_LOGW(TAG, "no clip flashed, back to the clock");
+                screen_set(SCREEN_CLOCK);
+            }
+            break;
+
+        case SCREEN_CLOCK:
+        default:
+            draw_clock();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            break;
+        }
 
         int64_t now = esp_timer_get_time();
         if (now >= next_log) {          /* periodic heartbeat, not change gated */
             usage_t u;
             bool have = usage_get(&u);
-            ESP_LOGI(TAG, "refresh %.0f Hz, ip %s, wifi %s, usage %s",
-                     hub75_refresh_hz(), net_ip(),
+            ESP_LOGI(TAG, "screen %s, refresh %.0f Hz, ip %s, wifi %s, usage %s",
+                     screen_name(screen_get()), hub75_refresh_hz(), net_ip(),
                      net_connected() ? "up" : "down",
                      have ? (u.stale ? "stale" : "fresh") : "waiting");
             next_log = now + 30000000LL;

@@ -64,7 +64,8 @@ static UINT jpeg_out(JDEC *jd, void *bitmap, JRECT *rect)
     return 1;
 }
 
-static bool play_raw(const esp_partition_t *part, const video_header_t *hdr)
+static bool play_raw(const esp_partition_t *part, const video_header_t *hdr,
+                     bool (*keep_going)(void))
 {
     const size_t frame_bytes = (size_t)hdr->width * hdr->height * sizeof(uint16_t);
     const uint32_t period_us = 1000000u / hdr->fps;
@@ -74,6 +75,7 @@ static bool play_raw(const esp_partition_t *part, const video_header_t *hdr)
 
     int64_t next = esp_timer_get_time();
     for (uint32_t i = 0; i < hdr->frames; i++) {
+        if (keep_going && !keep_going()) break;
         size_t off = HEADER_BYTES + (size_t)i * frame_bytes;
         if (esp_partition_read(part, off, frame, frame_bytes) != ESP_OK) break;
         hub75_blit_rgb565(frame);
@@ -86,7 +88,8 @@ static bool play_raw(const esp_partition_t *part, const video_header_t *hdr)
     return true;
 }
 
-static bool play_mjpeg(const esp_partition_t *part, const video_header_t *hdr)
+static bool play_mjpeg(const esp_partition_t *part, const video_header_t *hdr,
+                       bool (*keep_going)(void))
 {
     const uint32_t period_us = 1000000u / hdr->fps;
     bool ok = false;
@@ -124,6 +127,7 @@ static bool play_mjpeg(const esp_partition_t *part, const video_header_t *hdr)
     int64_t mark = next;
 
     for (uint32_t i = 0; i < hdr->frames; i++) {
+        if (keep_going && !keep_going()) { ok = true; goto done; }
         if (esp_partition_read(part, off, jpeg, sizes[i]) != ESP_OK) {
             ESP_LOGE(TAG, "read failed at frame %lu", (unsigned long)i);
             goto done;
@@ -166,7 +170,7 @@ done:
     return ok;
 }
 
-bool video_play(bool loop)
+bool video_play(bool loop, bool (*keep_going)(void))
 {
     const esp_partition_t *part = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "video");
@@ -194,10 +198,10 @@ bool video_play(bool loop)
              hdr.frames / (float)hdr.fps);
 
     do {
-        bool ok = (hdr.magic == MAGIC_MJPEG) ? play_mjpeg(part, &hdr)
-                                             : play_raw(part, &hdr);
+        bool ok = (hdr.magic == MAGIC_MJPEG) ? play_mjpeg(part, &hdr, keep_going)
+                                             : play_raw(part, &hdr, keep_going);
         if (!ok) return false;
-    } while (loop);
+    } while (loop && (!keep_going || keep_going()));
 
     return true;
 }

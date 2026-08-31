@@ -10,6 +10,7 @@
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "nvs_flash.h"
+#include "mdns.h"
 #include "esp_log.h"
 
 #include "net.h"
@@ -20,6 +21,11 @@ static const char *TAG = "net";
 /* Nepal is UTC+5:45 and has no daylight saving. POSIX inverts the sign of the
  * offset in a TZ string, so +5:45 is written -5:45. */
 #define TZ_STRING "NPT-5:45"
+
+/* Reachable as matrix-panel.local, which macOS resolves natively through
+ * Bonjour. Worth the few KiB: without it every DHCP change means editing the
+ * menu bar script. */
+#define MDNS_HOSTNAME "matrix-panel"
 
 #define BIT_CONNECTED BIT0
 
@@ -82,6 +88,15 @@ esp_err_t net_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    if (mdns_init() == ESP_OK) {
+        mdns_hostname_set(MDNS_HOSTNAME);
+        mdns_instance_name_set("matrix panel");
+        mdns_service_add(NULL, "_http", "_tcp", 8088, NULL, 0);
+        ESP_LOGI(TAG, "mdns: http://%s.local:8088/", MDNS_HOSTNAME);
+    } else {
+        ESP_LOGW(TAG, "mdns failed; reach the panel by IP instead");
+    }
 
     ESP_LOGI(TAG, "connecting to %s", WIFI_SSID);
     return ESP_OK;

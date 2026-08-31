@@ -6,3 +6,7 @@ dependencies:
   # uses. Fetched automatically on the next build.
   espressif/cjson:
     version: "*"
+  # Lets the panel answer to matrix-panel.local, so the menu bar script does
+  # not need a DHCP address that moves.
+  espressif/mdns:
+    version: "*"
