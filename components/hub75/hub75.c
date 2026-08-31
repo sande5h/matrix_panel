@@ -64,15 +64,26 @@ static const char *TAG = "hub75";
 #define MASK_OE   (1u << BIT_OE)            /* active low: 1 = panel blanked */
 
 /* --------------------------------------------------------------- layout */
-/* One block = one (row, plane) pair: WIDTH clocks of pixel data followed by a
- * short blanking tail that pulses LAT and moves the address lines on.
+/* One block = one (row, plane) pair, and it is exactly WIDTH clocks long.
+ * Every word in the stream is a clock, and the panel's shift register moves on
+ * every clock whether or not LAT is asserted -- so there is no room for extra
+ * "blanking" words after the data. Anything appended shows up as the image
+ * sliding sideways by that many columns. LAT is therefore asserted on the last
+ * data word, and the address change and OE guard live inside the same WIDTH
+ * clocks.
  *
  * The panel always displays what was latched at the end of the *previous*
  * block, so within block k the address lines and the OE window belong to
  * block k-1. That one-block skew is what makes the whole frame a single flat
  * buffer the DMA can push with no CPU involvement. */
-#define BLANK_WORDS  4
-#define BLOCK_WORDS  (HUB75_WIDTH + BLANK_WORDS)
+
+/* Words at the start of a block kept dark, covering the latch and the address
+ * lines settling. */
+#define OE_GUARD    2
+/* Words at the end of a block carrying the LAT pulse. A few panels want 2. */
+#define LAT_WORDS   1
+
+#define BLOCK_WORDS  HUB75_WIDTH
 #define NUM_BLOCKS   (HUB75_ROWS * HUB75_PLANES)
 #define BUF_WORDS    (NUM_BLOCKS * BLOCK_WORDS)
 #define BUF_BYTES    (BUF_WORDS * sizeof(uint16_t))
@@ -81,16 +92,20 @@ static const char *TAG = "hub75";
 #define BLOCK_BASE(k)        ((k) * BLOCK_WORDS)
 
 /* GDMA wants the transfer size burst aligned. With the stock geometry this
- * works out exactly; if you change WIDTH or PLANES and trip this, adjust
- * BLANK_WORDS until it divides again. */
+ * works out exactly; if you change WIDTH or PLANES and trip this, pad the
+ * block until it divides again. */
 _Static_assert(BUF_BYTES % 64 == 0, "refresh buffer must be a multiple of the 64 byte DMA burst");
 
-/* Plane p is lit for 2^p clocks scaled so the MSB plane fills the whole row
- * shift window. With WIDTH 128 and 6 planes that is 128, 64, 32, 16, 8, 4 --
- * all of it hidden inside the data shift, so no padding words are needed. */
+/* Clocks available for the OE window, once the guard and the latch are taken
+ * out of the row. */
+#define OE_SPAN (HUB75_WIDTH - OE_GUARD - LAT_WORDS)
+
+/* Plane p is lit for 2^p clocks scaled so the MSB plane fills the usable part
+ * of the row shift window. All of it hides inside the data shift, so the
+ * buffer needs no padding words. */
 static inline int plane_weight(int plane)
 {
-    return (HUB75_WIDTH << plane) >> (HUB75_PLANES - 1);
+    return (OE_SPAN << plane) >> (HUB75_PLANES - 1);
 }
 
 /* --------------------------------------------------------------- state */
@@ -120,41 +135,37 @@ static void apply_oe(void)
         int plane = prev % HUB75_PLANES;
 
         int on = plane_weight(plane) * s_brightness / 255;
-        if (on > HUB75_WIDTH) on = HUB75_WIDTH;
+        if (on > OE_SPAN) on = OE_SPAN;
 
         uint16_t *w = &s_buf[BLOCK_BASE(k)];
-        for (int i = 0; i < HUB75_WIDTH; i++) {
-            if (i < on) w[i] &= (uint16_t)~MASK_OE;   /* enabled */
-            else        w[i] |=  MASK_OE;             /* blanked */
-        }
-        /* The blanking tail is always dark: LAT and the address lines only
-         * ever move while the panel is off. */
-        for (int i = HUB75_WIDTH; i < BLOCK_WORDS; i++) {
-            w[i] |= MASK_OE;
+        for (int i = 0; i < BLOCK_WORDS; i++) {
+            bool lit = (i >= OE_GUARD) && (i < OE_GUARD + on);
+            if (lit) w[i] &= (uint16_t)~MASK_OE;   /* enabled */
+            else     w[i] |=  MASK_OE;             /* blanked */
         }
     }
 }
 
-/* Lays down everything that never changes: address lines, LAT pulses, OE. */
+/* Lays down everything that never changes: address lines, LAT pulse, OE. */
 static void build_skeleton(void)
 {
     memset(s_buf, 0, BUF_BYTES);
 
     for (int k = 0; k < NUM_BLOCKS; k++) {
         int prev     = (k + NUM_BLOCKS - 1) % NUM_BLOCKS;
-        int addr_now = prev / HUB75_PLANES;          /* row being displayed */
-        int addr_new = k / HUB75_PLANES;             /* row being shifted   */
+        int addr_now = prev / HUB75_PLANES;   /* the row currently displayed */
 
         uint16_t *w = &s_buf[BLOCK_BASE(k)];
 
-        for (int i = 0; i < HUB75_WIDTH; i++) {
+        for (int i = 0; i < BLOCK_WORDS; i++) {
             w[i] = (uint16_t)(addr_now << BIT_A);
         }
-        /* tail: hold the old address over the latch pulse, then switch. */
-        w[HUB75_WIDTH + 0] = (uint16_t)(addr_now << BIT_A) | MASK_LAT;
-        w[HUB75_WIDTH + 1] = (uint16_t)(addr_now << BIT_A) | MASK_LAT;
-        w[HUB75_WIDTH + 2] = (uint16_t)(addr_new << BIT_A);
-        w[HUB75_WIDTH + 3] = (uint16_t)(addr_new << BIT_A);
+        /* Latch the row we just shifted, on the last clock of the block. The
+         * address moves to the new row at the start of the next block, while
+         * OE_GUARD keeps the panel dark. */
+        for (int i = BLOCK_WORDS - LAT_WORDS; i < BLOCK_WORDS; i++) {
+            w[i] |= MASK_LAT;
+        }
     }
 
     apply_oe();
@@ -305,7 +316,7 @@ void hub75_clear(void)
     /* Faster than walking pixels: just knock out the six colour bits. */
     for (int k = 0; k < NUM_BLOCKS; k++) {
         uint16_t *w = &s_buf[BLOCK_BASE(k)];
-        for (int i = 0; i < HUB75_WIDTH; i++) w[i] &= (uint16_t)~MASK_RGB;
+        for (int i = 0; i < BLOCK_WORDS; i++) w[i] &= (uint16_t)~MASK_RGB;
     }
 }
 

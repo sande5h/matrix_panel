@@ -43,18 +43,44 @@ static void draw_plasma(float t)
     }
 }
 
-/* Solid colour walk-through -- the first thing to look at on a new panel. */
-static void draw_smoke_test(void)
+/* Lights one colour in one half of the panel at a time. Each half is fed by
+ * its own set of HUB75 data lines, so a channel that stays dark names the wire
+ * to check: the top half is R1/G1/B1, the bottom half R2/G2/B2. */
+static void draw_channel_test(void)
 {
-    const struct { uint8_t r, g, b; const char *name; } steps[] = {
-        {255, 0, 0, "red"}, {0, 255, 0, "green"}, {0, 0, 255, "blue"},
-        {255, 255, 255, "white"},
+    const struct { uint8_t r, g, b; const char *colour; } chans[] = {
+        {255, 0, 0, "R"}, {0, 255, 0, "G"}, {0, 0, 255, "B"},
     };
-    for (int i = 0; i < 4; i++) {
-        ESP_LOGI(TAG, "smoke test: %s", steps[i].name);
-        hub75_fill(steps[i].r, steps[i].g, steps[i].b);
-        vTaskDelay(pdMS_TO_TICKS(700));
+    for (int half = 0; half < 2; half++) {
+        int y0 = half ? HUB75_ROWS : 0;
+        int y1 = half ? HUB75_HEIGHT : HUB75_ROWS;
+        for (int c = 0; c < 3; c++) {
+            ESP_LOGI(TAG, "expect %s half all %s  (signal %s%d, GPIO check)",
+                     half ? "bottom" : "top", chans[c].colour,
+                     chans[c].colour, half ? 2 : 1);
+            hub75_clear();
+            for (int y = y0; y < y1; y++) {
+                for (int x = 0; x < HUB75_WIDTH; x++) {
+                    hub75_set_pixel(x, y, chans[c].r, chans[c].g, chans[c].b);
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(1200));
+        }
     }
+
+    /* A one pixel border plus corner marks: any horizontal shift shows up as
+     * the left or right edge landing in the wrong column. */
+    ESP_LOGI(TAG, "expect a 1px white border touching all four edges");
+    hub75_clear();
+    for (int x = 0; x < HUB75_WIDTH; x++) {
+        hub75_set_pixel(x, 0, 255, 255, 255);
+        hub75_set_pixel(x, HUB75_HEIGHT - 1, 255, 255, 255);
+    }
+    for (int y = 0; y < HUB75_HEIGHT; y++) {
+        hub75_set_pixel(0, y, 255, 255, 255);
+        hub75_set_pixel(HUB75_WIDTH - 1, y, 255, 255, 255);
+    }
+    vTaskDelay(pdMS_TO_TICKS(3000));
     hub75_clear();
 }
 
@@ -63,7 +89,7 @@ void app_main(void)
     ESP_ERROR_CHECK(hub75_init());
     ESP_ERROR_CHECK(hub75_start());
 
-    draw_smoke_test();
+    draw_channel_test();
 
     int64_t t0 = esp_timer_get_time();
     while (1) {
