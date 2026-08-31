@@ -36,6 +36,11 @@ extern "C" {
  * ghosting or smeared columns; the ribbon cable is usually the limit. */
 #define HUB75_PCLK_HZ (12 * 1000 * 1000)
 
+/* Clocks at the start of each row block with the panel blanked, covering the
+ * latch and the address lines settling. Raise it if row content ever ghosts
+ * onto other addresses; each extra word costs a little refresh rate. */
+#define HUB75_OE_GUARD 2
+
 /* Configures the i80 bus and allocates the DMA refresh buffer. Does not start
  * scanning yet -- call hub75_start(). */
 esp_err_t hub75_init(void);
