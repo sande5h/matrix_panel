@@ -10,9 +10,14 @@
 
 static const char *TAG = "main";
 
-/* Set to 1 while wiring or after swapping boards: holds each half in each
-   primary long enough to meter the data pin, and names the GPIO in the log. */
-#define PIN_CHECK 1
+/* Both default off so a boot goes straight to playback. Turn them on while
+   wiring or after swapping boards.
+
+   PIN_CHECK holds each half in each primary for 5 s, long enough to meter the
+   data pin, naming the GPIO in the log. SELF_TEST is the shorter confidence
+   check: each half in each primary, then a border. */
+#define PIN_CHECK 0
+#define SELF_TEST 0
 
 /* 6 bit hue -> RGB, no saturation/value control, just enough for a demo. */
 static void hue_rgb(uint8_t hue, uint8_t *r, uint8_t *g, uint8_t *b)
@@ -49,7 +54,7 @@ static void draw_plasma(float t)
 
 /* Quick confidence check at boot: each half in each primary, then a border
  * whose edges must land on the outermost rows and columns. */
-static void self_test(void)
+static void __attribute__((unused)) self_test(void)
 {
     const struct { uint8_t r, g, b; const char *name; } chans[] = {
         {255, 0, 0, "red"}, {0, 255, 0, "green"}, {0, 0, 255, "blue"},
@@ -121,7 +126,9 @@ void app_main(void)
 #if PIN_CHECK
     pin_check();
 #endif
+#if SELF_TEST
     self_test();
+#endif
 
     /* A flashed clip wins; the plasma is the fallback when there is none. */
     if (video_play(true)) return;
