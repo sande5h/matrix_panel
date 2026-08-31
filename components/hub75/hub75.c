@@ -6,6 +6,8 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_io_i80.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_log.h"
 
@@ -181,6 +183,8 @@ esp_err_t hub75_init(void)
 {
     ESP_RETURN_ON_FALSE(!s_buf, ESP_ERR_INVALID_STATE, TAG, "already initialised");
 
+    esp_err_t ret = ESP_OK;   /* ESP_GOTO_ON_* report through this */
+
     build_gamma();
 
     esp_lcd_i80_bus_config_t bus_cfg = {
@@ -230,7 +234,7 @@ esp_err_t hub75_init(void)
 err:
     if (s_io)  { esp_lcd_panel_io_del(s_io); s_io = NULL; }
     if (s_bus) { esp_lcd_del_i80_bus(s_bus); s_bus = NULL; }
-    return s_buf ? ESP_FAIL : ESP_ERR_NO_MEM;
+    return ret;
 }
 
 esp_err_t hub75_start(void)
