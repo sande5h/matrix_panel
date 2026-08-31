@@ -20,6 +20,12 @@ def main():
     ap.add_argument("input")
     ap.add_argument("output")
     ap.add_argument("--fps", type=int, default=15)
+    ap.add_argument("--start", default=None,
+                    help="seek to this timestamp first, e.g. 0:45 or 45")
+    ap.add_argument("--duration", type=float, default=None,
+                    help="seconds to take; raw frames are big, so this matters")
+    ap.add_argument("--limit-mib", type=float, default=5.0,
+                    help="warn if the output exceeds the video partition")
     ap.add_argument("--width", type=int, default=WIDTH)
     ap.add_argument("--height", type=int, default=HEIGHT)
     args = ap.parse_args()
@@ -29,8 +35,13 @@ def main():
           f"scale={args.width}:{args.height}:force_original_aspect_ratio=decrease:flags=lanczos,"
           f"pad={args.width}:{args.height}:(ow-iw)/2:(oh-ih)/2")
 
-    cmd = ["ffmpeg", "-v", "error", "-i", args.input,
-           "-vf", vf, "-f", "rawvideo", "-pix_fmt", "rgb565le", "-"]
+    cmd = ["ffmpeg", "-v", "error"]
+    if args.start:                      # before -i, so ffmpeg seeks rather than decodes
+        cmd += ["-ss", str(args.start)]
+    cmd += ["-i", args.input]
+    if args.duration:
+        cmd += ["-t", str(args.duration)]
+    cmd += ["-vf", vf, "-f", "rawvideo", "-pix_fmt", "rgb565le", "-"]
     frames = subprocess.run(cmd, stdout=subprocess.PIPE, check=True).stdout
 
     frame_bytes = args.width * args.height * 2
@@ -45,8 +56,14 @@ def main():
         f.write(frames)
 
     total = 16 + len(frames)
+    mib = total / 1024 / 1024
     print(f"{count} frames, {args.width}x{args.height} @ {args.fps} fps")
-    print(f"{total/1024/1024:.2f} MiB, {count/args.fps:.1f} seconds")
+    print(f"{mib:.2f} MiB, {count/args.fps:.1f} seconds")
+    if mib > args.limit_mib:
+        fits = args.limit_mib * 1024 * 1024 / frame_bytes / args.fps
+        print(f"\n  WARNING: this will not fit the {args.limit_mib:g}M video "
+              f"partition.\n  Trim to about {fits:.0f}s with --duration, drop "
+              f"--fps, or enlarge the partition in partitions.csv.")
     print(f"\nflash it with:\n"
           f"  parttool.py --port /dev/cu.usbmodem* write_partition "
           f"--partition-name video --input {args.output}")
