@@ -4,8 +4,10 @@ CONFIG_IDF_TARGET="esp32s3"
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_FREERTOS_HZ=1000
 
-# Flash / PSRAM: adjust to your module. PSRAM is NOT used for the DMA buffer.
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# ESP32-S3-N16R8: 16 MB flash, 8 MB octal PSRAM. The refresh buffer is always
+# internal RAM, so PSRAM is left off -- enable it as octal (not quad) if the
+# app needs it.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 
