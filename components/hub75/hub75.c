@@ -78,8 +78,8 @@ static const char *TAG = "hub75";
  * buffer the DMA can push with no CPU involvement. */
 
 /* Words at the start of a block kept dark, covering the latch and the address
- * lines settling. Tunable via HUB75_OE_GUARD. */
-#define OE_GUARD    HUB75_OE_GUARD
+ * lines settling. */
+#define OE_GUARD    2
 /* Words at the end of a block carrying the LAT pulse. A few panels want 2. */
 #define LAT_WORDS   1
 

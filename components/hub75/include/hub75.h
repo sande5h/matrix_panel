@@ -31,15 +31,10 @@ extern "C" {
 #define HUB75_ROWS    (HUB75_HEIGHT / 2)   /* 1/32 scan: A..E address lines */
 #define HUB75_PLANES  6                    /* binary code modulation depth  */
 
-/* Pixel clock. Hand-wired panels rarely take 12 MHz cleanly: ghost rows and
- * smeared columns are the usual signature of too fast a clock or too little
- * blanking. Work upwards from 6 MHz once the picture is clean. */
-#define HUB75_PCLK_HZ (6 * 1000 * 1000)
-
-/* Clocks at the start of each row block with the panel blanked, covering the
- * latch and the address lines settling. Raise this if a row's content ghosts
- * onto other addresses; every extra word costs refresh rate, not colour. */
-#define HUB75_OE_GUARD 6
+/* Pixel clock. A 128 wide panel needs twice the clocks per row, so this is
+ * pushed up to keep the refresh rate sane. Drop to 8 MHz first if you see
+ * ghosting or smeared columns; the ribbon cable is usually the limit. */
+#define HUB75_PCLK_HZ (12 * 1000 * 1000)
 
 /* Configures the i80 bus and allocates the DMA refresh buffer. Does not start
  * scanning yet -- call hub75_start(). */
