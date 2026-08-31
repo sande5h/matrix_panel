@@ -45,3 +45,15 @@ void gfx_seconds_sweep(int sec);
  * makes the wrap seamless rather than a jump back to the start. */
 void gfx_marquee(int y, const char *s, int scale, int *offset,
                  uint8_t r, uint8_t g, uint8_t b);
+
+/* The same, confined to a column starting at x0. Text that fits is centred in
+ * the column; text that does not scrolls from x0 and is allowed to run off to
+ * the left, where the caller paints the thumbnail over it afterwards -- so a
+ * long title reads as sliding behind the artwork. */
+void gfx_marquee_at(int x0, int w, int y, const char *s, int scale, int *offset,
+                    uint8_t r, uint8_t g, uint8_t b);
+
+/* Draws a packed RGB565 image at x,y. Used for the album thumbnail, which
+ * arrives already scaled and converted on the Mac -- the panel has no business
+ * decoding a JPEG for something this small. */
+void gfx_blit_rgb565(int x, int y, int w, int h, const uint16_t *px);

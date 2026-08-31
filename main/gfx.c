@@ -110,19 +110,44 @@ void gfx_seconds_sweep(int sec)
     for (int x = 0; x < len; x++) hub75_set_pixel(x, 0, 0, 200, 80);
 }
 
-void gfx_marquee(int y, const char *s, int scale, int *offset,
-                 uint8_t r, uint8_t g, uint8_t b)
+void gfx_marquee_at(int x0, int w, int y, const char *s, int scale, int *offset,
+                    uint8_t r, uint8_t g, uint8_t b)
 {
-    int w = gfx_text_width(s, scale);
-    if (w <= HUB75_WIDTH) {
-        gfx_text((HUB75_WIDTH - w) / 2, y, s, scale, r, g, b);
+    int tw = gfx_text_width(s, scale);
+    if (tw <= w) {
+        gfx_text(x0 + (w - tw) / 2, y, s, scale, r, g, b);
         *offset = 0;
         return;
     }
 
-    int span = w + 8 * scale;          /* the gap between the two copies */
+    int span = tw + 8 * scale;          /* the gap between the two copies */
     int off = *offset % span;
-    gfx_text(-off, y, s, scale, r, g, b);
-    gfx_text(-off + span, y, s, scale, r, g, b);
+    gfx_text(x0 - off, y, s, scale, r, g, b);
+    gfx_text(x0 - off + span, y, s, scale, r, g, b);
     *offset = off + 1;
+}
+
+void gfx_marquee(int y, const char *s, int scale, int *offset,
+                 uint8_t r, uint8_t g, uint8_t b)
+{
+    gfx_marquee_at(0, HUB75_WIDTH, y, s, scale, offset, r, g, b);
+}
+
+void gfx_blit_rgb565(int x, int y, int w, int h, const uint16_t *px)
+{
+    if (!px) return;
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            uint16_t p = px[row * w + col];
+            /* 5/6/5 back out to 8 bits a channel, replicating the high bits so
+             * full-scale stays full-scale rather than 248. */
+            uint8_t r = (uint8_t)((p >> 11) & 0x1F);
+            uint8_t g = (uint8_t)((p >> 5) & 0x3F);
+            uint8_t b = (uint8_t)(p & 0x1F);
+            hub75_set_pixel(x + col, y + row,
+                            (uint8_t)((r << 3) | (r >> 2)),
+                            (uint8_t)((g << 2) | (g >> 4)),
+                            (uint8_t)((b << 3) | (b >> 2)));
+        }
+    }
 }

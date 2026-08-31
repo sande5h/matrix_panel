@@ -12,6 +12,11 @@ static const char *TAG = "nowplaying";
 static nowplaying_t s_np;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 
+/* Static rather than heap: it is a fixed 4.6 KiB that lives for the life of
+ * the app, and a failed allocation mid-track would be worse than the space. */
+static uint16_t s_art[ART_W * ART_H];
+static volatile bool s_have_art;
+
 static void copy_str(char *dst, size_t n, const cJSON *obj, const char *key)
 {
     const cJSON *item = cJSON_GetObjectItem(obj, key);
@@ -58,6 +63,13 @@ bool nowplaying_update(const char *json)
         np.valid = np.title[0] != '\0';
     }
 
+    /* A different track invalidates the artwork; the Mac pushes a new one
+     * straight after, and until it arrives showing none beats showing the
+     * previous cover. */
+    if (strcmp(np.title, s_np.title) != 0) {
+        s_have_art = false;
+    }
+
     portENTER_CRITICAL(&s_lock);
     s_np = np;
     portEXIT_CRITICAL(&s_lock);
@@ -87,4 +99,26 @@ bool nowplaying_get(nowplaying_t *out)
         return false;
     }
     return true;
+}
+
+bool nowplaying_set_art(const uint8_t *rgb565, size_t len)
+{
+    if (len != ART_BYTES) {
+        ESP_LOGW(TAG, "art is %u bytes, expected %u", (unsigned)len, (unsigned)ART_BYTES);
+        return false;
+    }
+    memcpy(s_art, rgb565, ART_BYTES);
+    s_have_art = true;
+    ESP_LOGI(TAG, "art updated");
+    return true;
+}
+
+const uint16_t *nowplaying_art(void)
+{
+    return s_have_art ? s_art : NULL;
+}
+
+void nowplaying_clear_art(void)
+{
+    s_have_art = false;
 }

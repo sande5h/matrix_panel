@@ -96,6 +96,31 @@ static esp_err_t nowplaying_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* Raw RGB565, exactly ART_BYTES of it. Scaling and colour conversion happen on
+ * the Mac with ffmpeg, so nothing here has to decode an image. */
+static esp_err_t art_post(httpd_req_t *req)
+{
+    if (req->content_len != ART_BYTES) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "expected 48x48 rgb565");
+        return ESP_FAIL;
+    }
+
+    static uint8_t buf[ART_BYTES];
+    int got = 0;
+    while (got < (int)ART_BYTES) {
+        int n = httpd_req_recv(req, (char *)buf + got, ART_BYTES - got);
+        if (n <= 0) return ESP_FAIL;
+        got += n;
+    }
+
+    if (!nowplaying_set_art(buf, ART_BYTES)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad art");
+        return ESP_FAIL;
+    }
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 /* Deliberately tiny: this is a control panel, not a dashboard. It reads the
  * same JSON the menu bar script does, so the two can never disagree. */
 static const char PAGE[] =
@@ -144,6 +169,7 @@ esp_err_t server_start(void)
         { .uri = "/toggle", .method = HTTP_POST, .handler = toggle_any },
         { .uri = "/screen", .method = HTTP_GET,  .handler = screen_get_handler },
         { .uri = "/nowplaying", .method = HTTP_POST, .handler = nowplaying_post },
+        { .uri = "/nowplaying/art", .method = HTTP_POST, .handler = art_post },
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         httpd_register_uri_handler(server, &routes[i]);

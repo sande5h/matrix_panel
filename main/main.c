@@ -143,11 +143,8 @@ static void draw_nowplaying(void)
         return;
     }
 
+    const uint16_t *art = nowplaying_art();
     gfx_text_center(0, np.playing ? "NOW PLAYING" : "PAUSED", 1, 0, 140, 170);
-    gfx_marquee(10, np.title,  2, &title_off,  255, 170, 40);
-    gfx_marquee(28, np.artist, 1, &artist_off, 120, 120, 140);
-
-    if (np.duration_s <= 0) return;
 
     int dur = clamp_secs(np.duration_s);
     int pos = np.position_s;
@@ -155,14 +152,34 @@ static void draw_nowplaying(void)
         pos += (int)((esp_timer_get_time() - np.updated_us) / 1000000);
     }
     pos = clamp_secs(pos);
-    if (pos > dur) pos = dur;
+    if (dur && pos > dur) pos = dur;
 
-    gfx_bar_track(2, 41, HUB75_WIDTH - 4, 6, pos * 100 / dur, !np.playing);
+    if (art) {
+        /* Artwork left, text in the column beside it. The text is drawn first
+         * so the thumbnail paints over anything that scrolled under it. */
+        const int col = ART_W + 6;                  /* 54 */
+        const int colw = HUB75_WIDTH - col - 2;     /* 72 */
+
+        gfx_marquee_at(col, colw, 12, np.title,  1, &title_off,  255, 170, 40);
+        gfx_marquee_at(col, colw, 24, np.artist, 1, &artist_off, 120, 120, 140);
+        if (dur > 0) {
+            gfx_bar_track(col, 36, colw, 5, pos * 100 / dur, !np.playing);
+        }
+        gfx_blit_rgb565(2, 9, ART_W, ART_H, art);
+    } else {
+        gfx_marquee(10, np.title,  2, &title_off,  255, 170, 40);
+        gfx_marquee(28, np.artist, 1, &artist_off, 120, 120, 140);
+        if (dur > 0) {
+            gfx_bar_track(2, 41, HUB75_WIDTH - 4, 6, pos * 100 / dur, !np.playing);
+        }
+    }
+
+    if (dur <= 0) return;
 
     char times[24];
     snprintf(times, sizeof(times), "%d:%02d / %d:%02d",
              pos / 60, pos % 60, dur / 60, dur % 60);
-    gfx_text_center(52, times, 1, 90, 90, 110);
+    gfx_text_center(art ? 57 : 52, times, 1, 90, 90, 110);
 }
 
 /* Shown until the network and the clock are both up. Without this the panel
