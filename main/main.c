@@ -204,35 +204,41 @@ static void block(const char *what, int y0, int y1, int x0, int x1,
     hold(what, 3000, draw_block);
 }
 
+/* Measured from the photo: a block at rows 40..43 (addresses 8..11) throws a
+ * one-row ghost at row 32 -- address 0 of the bottom half -- carrying the same
+ * columns as the block.
+ *
+ * Two mechanisms fit, and where the ghost sits tells them apart. If it stays
+ * pinned at row 32 as the block moves, it is a frame-boundary artifact: the
+ * peripheral emits a blank clock at each end of the transaction, and a word of
+ * all zeros means address 0 with OE asserted, because OE is active low. If the
+ * ghost instead follows the block, the address lines are not settling before
+ * OE turns on, which is what HUB75_OE_GUARD and a slower clock buy. */
 void app_main(void)
 {
     ESP_ERROR_CHECK(hub75_init());
     ESP_ERROR_CHECK(hub75_start());
     hub75_set_brightness(128);
 
+    const int rows[] = {40, 44, 48, 56, 60};
+
     while (1) {
-        /* Top half, LEFT quarter, green. */
-        block("TOP-LEFT green", 8, 12, 0, 32, 0, 255, 0);
-
-        /* Bottom half, RIGHT quarter, blue. Mirrors the step above. */
-        block("BOTTOM-RIGHT blue", 40, 44, 96, 128, 0, 0, 255);
-
-        /* Both at once: if the halves mirror each other, every copy shows both
-         * colours in both positions. */
-        ESP_LOGI(TAG, "=== BOTH: green top-left + blue bottom-right ===");
-        s_probe_r = 0; s_probe_g = 255; s_probe_b = 0;
-        int64_t t_end = esp_timer_get_time() + 4000000LL;
-        while (esp_timer_get_time() < t_end) {
-            hub75_clear();
-            for (int y = 8; y < 12; y++)
-                for (int x = 0; x < 32; x++) hub75_set_pixel(x, y, 0, 255, 0);
-            for (int y = 40; y < 44; y++)
-                for (int x = 96; x < 128; x++) hub75_set_pixel(x, y, 0, 0, 255);
-            ESP_LOGI(TAG, "  both  frames=%lu", (unsigned long)hub75_frame_count());
-            vTaskDelay(pdMS_TO_TICKS(100));
+        for (int i = 0; i < 5; i++) {
+            int y0 = rows[i];
+            char what[48];
+            snprintf(what, sizeof(what), "bottom rows %d..%d (addr %d..%d)",
+                     y0, y0 + 3, y0 - 32, y0 - 29);
+            ESP_LOGI(TAG, "=== %s -- watch WHERE the ghost sits ===", what);
+            block(what, y0, y0 + 4, 96, 128, 0, 0, 255);
         }
 
-        /* Single row in the middle of the TOP half, one channel, for reference. */
-        block("TOP row 16 green", 16, 17, 0, 128, 0, 255, 0);
+        /* Same thing in the top half: does it ghost onto row 0? */
+        ESP_LOGI(TAG, "=== top rows 8..11, green -- ghost at row 0? ===");
+        block("top rows 8..11", 8, 12, 0, 32, 0, 255, 0);
+
+        /* Nothing drawn at all. Any lit row here is pure artifact. */
+        ESP_LOGI(TAG, "=== blank panel -- expect nothing lit ===");
+        hub75_clear();
+        hold("blank", 3000, NULL);
     }
 }
