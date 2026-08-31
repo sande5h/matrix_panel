@@ -150,15 +150,18 @@ static void __attribute__((unused)) draw_channel_test(void)
 }
 
 static int s_line_row = -1, s_line_col = -1;
+static uint8_t s_probe_r = 255, s_probe_g = 255, s_probe_b = 255;
 
 static void draw_lines(void)
 {
     hub75_clear();
     if (s_line_row >= 0) {
-        for (int x = 0; x < HUB75_WIDTH; x++) hub75_set_pixel(x, s_line_row, 255, 255, 255);
+        for (int x = 0; x < HUB75_WIDTH; x++)
+            hub75_set_pixel(x, s_line_row, s_probe_r, s_probe_g, s_probe_b);
     }
     if (s_line_col >= 0) {
-        for (int y = 0; y < HUB75_HEIGHT; y++) hub75_set_pixel(s_line_col, y, 255, 255, 255);
+        for (int y = 0; y < HUB75_HEIGHT; y++)
+            hub75_set_pixel(s_line_col, y, s_probe_r, s_probe_g, s_probe_b);
     }
 }
 
@@ -170,35 +173,44 @@ static void one_line(const char *what, int row, int col, int ms)
     hold(what, ms, draw_lines);
 }
 
-/* Geometry probe. The border showed an extra line through the middle, so walk
- * single lines one at a time: a lone line that shows up twice, or lands in the
- * wrong place, says exactly how the row/column mapping is off. */
+/* Drawing row 31 white lit rows 31 AND 63, and lit them cyan rather than
+ * white. Nothing in the driver can put upper-half data into the lower half, so
+ * this walks one row in one colour at a time. Each step drives exactly ONE
+ * HUB75 data line, named in the log, so whatever shows up on the panel maps
+ * straight back to a wire.
+ *
+ * Row 31 is the last row of the top half   -> R1 (GPIO 4) / G1 (9) / B1 (5)
+ * Row 63 is the last row of the bottom half -> R2 (GPIO 6) / G2 (10) / B2 (7)
+ *
+ * One line, right place, right colour  = that wire is good.
+ * Two lines 32 apart                   = that pin is shorted to its partner.
+ * No line at all                       = that wire is open. */
+static void probe(const char *signal, int gpio, int row, uint8_t r, uint8_t g, uint8_t b)
+{
+    char what[48];
+    snprintf(what, sizeof(what), "%s (GPIO %d) row %d", signal, gpio, row);
+    ESP_LOGI(TAG, "=== %s: expect ONE line at row %d ===", what, row);
+
+    s_line_row = row;
+    s_line_col = -1;
+    s_probe_r = r;
+    s_probe_g = g;
+    s_probe_b = b;
+    hold(what, 2500, draw_lines);
+}
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(hub75_init());
     ESP_ERROR_CHECK(hub75_start());
-
-    /* Full white at 255 flashes because of supply sag, so stay off that. */
     hub75_set_brightness(128);
 
-    int64_t t0 = esp_timer_get_time();
     while (1) {
-        one_line("row 0 only -- top edge, nothing else",        0,  -1, 2500);
-        one_line("row 31 only -- last row of the TOP half",     31, -1, 2500);
-        one_line("row 32 only -- first row of the BOTTOM half", 32, -1, 2500);
-        one_line("row 63 only -- bottom edge",                  63, -1, 2500);
-        one_line("column 0 only -- left edge",                  -1,  0, 2500);
-        one_line("column 64 only -- middle column",             -1, 64, 2500);
-        one_line("column 127 only -- right edge",               -1, 127, 2500);
-
-        ESP_LOGI(TAG, "=== full border, brightness 128 ===");
-        hold("border", 3000, draw_border);
-
-        ESP_LOGI(TAG, "=== plasma ===");
-        int64_t t_end = esp_timer_get_time() + 3000000LL;
-        while (esp_timer_get_time() < t_end) {
-            draw_plasma((esp_timer_get_time() - t0) / 1e6f);
-            vTaskDelay(pdMS_TO_TICKS(20));
-        }
+        probe("R1", 4,  31, 255, 0, 0);
+        probe("G1", 9,  31, 0, 255, 0);
+        probe("B1", 5,  31, 0, 0, 255);
+        probe("R2", 6,  63, 255, 0, 0);
+        probe("G2", 10, 63, 0, 255, 0);
+        probe("B2", 7,  63, 0, 0, 255);
     }
 }
