@@ -37,7 +37,12 @@ def main():
                          "and throws away the overflow. A portrait source needs "
                          "crop, or it lands as a narrow strip")
     ap.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0,
-                    help="rotate before fitting, for a panel mounted on its side")
+                    help="rotate before fitting. Also fixes footage whose "
+                         "content sits sideways inside an upright frame")
+    ap.add_argument("--focus", type=float, default=0.5,
+                    help="where --fit crop takes its band from: 0 is the top "
+                         "edge, 1 the bottom, 0.5 the middle. Faces are rarely "
+                         "in the middle of a portrait shot")
     ap.add_argument("--width", type=int, default=WIDTH)
     ap.add_argument("--height", type=int, default=HEIGHT)
     args = ap.parse_args()
@@ -51,10 +56,14 @@ def main():
         steps.append("hflip,vflip")
 
     if args.fit == "crop":
-        # Fill the panel, then cut the overflow off the centre.
+        # Fill the panel, then cut a band out of the overflow. ffmpeg evaluates
+        # the offset against the scaled input, so --focus works whatever the
+        # source aspect ratio is.
+        focus = min(max(args.focus, 0.0), 1.0)
         steps.append(f"scale={args.width}:{args.height}"
                      f":force_original_aspect_ratio=increase:flags=lanczos")
-        steps.append(f"crop={args.width}:{args.height}")
+        steps.append(f"crop={args.width}:{args.height}"
+                     f":(iw-ow)*{focus}:(ih-oh)*{focus}")
     else:
         # Keep the whole frame and letterbox it. Never distorts.
         steps.append(f"scale={args.width}:{args.height}"
