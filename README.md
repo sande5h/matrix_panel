@@ -97,13 +97,13 @@ idf.py build flash monitor
 
 ## Status
 
-Compiles against ESP-IDF v6.0.2; not yet verified on hardware. Two things to
-check first on a real panel:
+Working on hardware: a Q2.5AB32V4 128x64 P2.5 panel driven by an ESP32-S3
+N16R8 at 12 MHz, ~488 Hz refresh.
 
-1. **Bit order.** The driver assumes bit 0 of each 16 bit word comes out on
-   `data_gpio_nums[0]`, with no byte swapping. If colours come out scrambled,
-   that is where to look -- `flags.swap_color_bytes` and
-   `flags.reverse_color_bits` on the i80 IO config are the knobs.
-2. **Latch polarity / tail length.** Four blanking words is generous for most
-   panels, but some FM6126A-based ones need an init sequence before they will
-   display anything at all.
+Notes from bringing it up:
+
+- On a HUB75E connector the latch is labelled **LE**, not LAT. Same signal.
+- Full white at brightness 255 flashes on a modest supply -- that is the panel
+  drawing several amps, not a driver fault. 128 is a comfortable default.
+- If row content ever ghosts onto another address, raise `HUB75_OE_GUARD` or
+  lower `HUB75_PCLK_HZ` before suspecting anything else.
