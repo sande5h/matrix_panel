@@ -90,7 +90,7 @@ static void draw_border(void)
  * out the panel supply (a solid half is far more current than plasma, which is
  * mostly dark). These steps separate them -- the border is only ~380 LEDs, so
  * it cannot be a power problem. */
-static void draw_persistence_test(void)
+static void __attribute__((unused)) draw_persistence_test(void)
 {
     ESP_LOGI(TAG, "A: border, drawn ONCE -- expect a white border for 3 s");
     draw_border();
@@ -123,7 +123,7 @@ static void draw_persistence_test(void)
 /* Lights one colour in one half of the panel at a time. Each half is fed by
  * its own set of HUB75 data lines, so a channel that stays dark names the wire
  * to check: the top half is R1/G1/B1, the bottom half R2/G2/B2. */
-static void draw_channel_test(void)
+static void __attribute__((unused)) draw_channel_test(void)
 {
     const struct { uint8_t r, g, b; const char *colour; } chans[] = {
         {255, 0, 0, "R"}, {0, 255, 0, "G"}, {0, 0, 255, "B"},
@@ -149,32 +149,50 @@ static void draw_channel_test(void)
     hub75_clear();
 }
 
+/* A frozen plasma stays on screen, so the buffer and the DMA refresh are both
+ * fine. What is left is either the content or the current a solid fill draws.
+ * This rotation puts all of it side by side in one run: watch which steps are
+ * visible and tell them apart by the log line. */
 void app_main(void)
 {
     ESP_ERROR_CHECK(hub75_init());
     ESP_ERROR_CHECK(hub75_start());
 
-    draw_persistence_test();
-    draw_channel_test();
-
-    /* The plasma is the one thing known to display. So run it, then STOP
-     * drawing and leave the last frame sitting in the buffer. If a frozen
-     * plasma vanishes, the panel only ever shows content while the CPU is
-     * writing to the buffer -- which is a driver problem, not a pattern or a
-     * power problem. If a frozen plasma stays on screen, the buffer is fine
-     * and the earlier blank test frames were about what was drawn. */
     int64_t t0 = esp_timer_get_time();
     while (1) {
-        ESP_LOGI(TAG, "=== ANIMATING 3 s: expect a moving plasma ===");
+        ESP_LOGI(TAG, "=== 1. plasma, animating -- known good ===");
         int64_t t_end = esp_timer_get_time() + 3000000LL;
         while (esp_timer_get_time() < t_end) {
             draw_plasma((esp_timer_get_time() - t0) / 1e6f);
-            ESP_LOGI(TAG, "  animating  frames=%lu  %.0f Hz",
-                     (unsigned long)hub75_frame_count(), hub75_refresh_hz());
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
 
-        ESP_LOGI(TAG, "=== FROZEN 3 s: expect the SAME plasma, motionless ===");
-        hold("frozen", 3000, NULL);
+        ESP_LOGI(TAG, "=== 2. plasma, frozen -- known good ===");
+        hold("frozen plasma", 3000, NULL);
+
+        /* Same plasma, then clear(). Isolates clear() itself: everything that
+         * was blank in the old tests called it first, and the plasma never
+         * did. */
+        ESP_LOGI(TAG, "=== 3. plasma then clear() -- expect black ===");
+        hub75_clear();
+        hold("after clear", 2000, NULL);
+
+        /* Lowest current pattern there is. If this is blank, it is not power. */
+        ESP_LOGI(TAG, "=== 4. 1px white border, ~380 LEDs ===");
+        hold("border", 3000, draw_border);
+
+        s_pat_y0 = 0;
+        s_pat_y1 = HUB75_HEIGHT;
+        s_pat_r = s_pat_g = s_pat_b = 255;
+
+        ESP_LOGI(TAG, "=== 5. full white at 12%% brightness ===");
+        hub75_set_brightness(32);
+        hold("white, dim", 3000, draw_half);
+
+        ESP_LOGI(TAG, "=== 6. full white at 100%% brightness ===");
+        hub75_set_brightness(255);
+        hold("white, bright", 3000, draw_half);
+
+        hub75_set_brightness(160);
     }
 }
