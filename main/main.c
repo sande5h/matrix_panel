@@ -16,6 +16,7 @@
 #include "nowplaying.h"
 #include "screen.h"
 #include "server.h"
+#include "update.h"
 
 static const char *TAG = "main";
 
@@ -216,6 +217,34 @@ static void draw_status(const char *line1, const char *line2, int spin)
     if (line2) gfx_text_center(42, line2, 1, 0, 140, 170);
 }
 
+/* An OTA or video upload in flight. Held on screen rather than letting the
+ * clock tick through it, because a push that quietly fails halfway is exactly
+ * the thing worth seeing from across the room. */
+static void draw_update(void)
+{
+    static int msg_off;
+    const char *what = "", *msg = NULL;
+    int pct = 0;
+
+    if (!update_progress(&what, &pct, &msg)) return;   /* finished under us */
+
+    hub75_clear();
+    gfx_text_center(6, what, 2, 255, 170, 40);
+
+    if (msg) {
+        gfx_text_center(30, "FAILED", 1, 220, 60, 60);
+        gfx_marquee(44, msg, 1, &msg_off, 150, 150, 160);
+        return;
+    }
+
+    msg_off = 0;
+
+    char txt[8];
+    snprintf(txt, sizeof(txt), "%d%%", pct);
+    gfx_text_center(28, txt, 2, 255, 255, 255);
+    gfx_bar_track(2, 50, HUB75_WIDTH - 4, 8, pct, false);
+}
+
 /* Checked once per video frame so a screen change interrupts playback. */
 static bool on_video_screen(void)
 {
@@ -247,6 +276,9 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(400));
     }
     ESP_ERROR_CHECK(server_start());
+    /* The server answering is the bar for "this image works". Anything worse
+     * than that crash-loops, and the bootloader puts the old slot back. */
+    update_confirm();
     draw_status("NET OK", net_ip(), 0);
     vTaskDelay(pdMS_TO_TICKS(1500));
 
@@ -269,6 +301,11 @@ void app_main(void)
         case SCREEN_NOWPLAYING:
             draw_nowplaying();
             vTaskDelay(pdMS_TO_TICKS(50));   /* fast enough to scroll smoothly */
+            break;
+
+        case SCREEN_UPDATE:
+            draw_update();
+            vTaskDelay(pdMS_TO_TICKS(100));
             break;
 
         case SCREEN_VIDEO:
