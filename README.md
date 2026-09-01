@@ -254,6 +254,40 @@ Neither upload can leave the panel unbootable:
 > table. Every one after that can go over wifi. Rewriting the table also wipes
 > the video partition, so re-push the clip afterwards.
 
+## Streaming from the Mac
+
+The panel listens on **8089** for raw frames. Nothing is encoded and nothing is
+flashed, so this is the shortest path from a picture on the Mac to a picture on
+the panel:
+
+```
+./tools/stream.py clip.mp4 --loop
+./tools/stream.py screen              # mirror a display
+./tools/stream.py camera
+./tools/stream.py --list              # which avfoundation devices exist
+```
+
+Because there is no JPEG in the path there is no compression error either. A
+flashed clip lands 6-7x the panel's own quantisation noise; a streamed frame is
+at the floor. It costs 5.9 Mbps at 30 fps against the 15-30 Mbps the ESP32
+sustains, and it moves the per-frame cost off the CPU -- decoding is the
+expensive part of playback, and there is nothing to decode.
+
+| | per frame | 30 fps | 60 fps |
+|---|---|---|---|
+| raw RGB888 (streamed) | 24576 B | 5.90 Mbps | 11.80 Mbps |
+| MJPEG q95 (flashed) | 5319 B | 1.28 Mbps | 2.55 Mbps |
+
+Each frame carries a four byte magic word. TCP does not lose bytes, so that is
+not about corruption: it catches a sender whose frames are the wrong size,
+which would otherwise skew the picture a little further every frame and look
+like a hardware fault. The panel resyncs a byte at a time and says so.
+
+`sendall` blocks when the panel falls behind, so TCP's own backpressure is the
+flow control -- no queue to grow, no frames to drop, no drift. Closing the
+sender puts the panel back on whatever it was showing, and toggling the screen
+away drops the connection.
+
 ## Claude quota
 
 The two bars come from the `ccusage_server.py` that already serves the
