@@ -19,7 +19,8 @@ import argparse, re, socket, struct, subprocess, sys
 
 WIDTH, HEIGHT = 128, 64
 FRAME_BYTES = WIDTH * HEIGHT * 3
-MAGIC = b"HB7S"
+MAGIC_RAW = b"HB7S"
+MAGIC_JPEG = b"HB7Z"
 PORT = 8089
 
 
@@ -94,6 +95,19 @@ def build_ffmpeg(args):
         cmd += ["-i", args.source]
 
     steps = [f"fps={args.fps}"]
+
+    # Crop first, so everything after it works on the region rather than the
+    # whole screen. A 1920x1080 display squeezed into 128x64 is a 15x
+    # reduction and no font survives it; taking a 2:1 region instead means a
+    # 2x or 4x reduction, which text does survive.
+    if args.crop:
+        m = re.fullmatch(r"(\d+)x(\d+)(?:\+(\d+)\+(\d+))?", args.crop)
+        if not m:
+            sys.exit("--crop wants WxH or WxH+X+Y, e.g. 256x128+0+0")
+        cw, ch = m.group(1), m.group(2)
+        cx, cy = m.group(3) or "0", m.group(4) or "0"
+        steps.append(f"crop={cw}:{ch}:{cx}:{cy}")
+
     if args.rotate in (90, 270):
         steps.append("transpose=1" if args.rotate == 90 else "transpose=2")
     elif args.rotate == 180:
@@ -109,8 +123,34 @@ def build_ffmpeg(args):
                      f"force_original_aspect_ratio=decrease:flags=lanczos")
         steps.append(f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:black")
 
-    return cmd + ["-vf", ",".join(steps),
-                  "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    cmd += ["-vf", ",".join(steps)]
+
+    if args.format == "raw":
+        return cmd + ["-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+
+    # 4:2:0 only. ffmpeg writes 4:2:2 and 4:4:4 with chroma sampling factors of
+    # 0x12, which the ESP32 ROM decoder rejects outright -- see the note in
+    # encode_video.py. 4:2:0 comes out as 0x22 0x11 0x11, which it accepts.
+    return cmd + ["-c:v", "mjpeg", "-q:v", str(args.quality),
+                  "-pix_fmt", "yuvj420p", "-f", "mjpeg", "-"]
+
+
+def jpeg_frames(stream):
+    """Split ffmpeg's concatenated MJPEG output into frames. Splitting on the
+    end-of-image marker is safe: inside entropy-coded data an FF byte is
+    stuffed as FF 00, so FF D9 only ever appears as the real marker."""
+    buf = b""
+    while True:
+        chunk = stream.read(65536)
+        if not chunk:
+            return
+        buf += chunk
+        while True:
+            end = buf.find(b"\xff\xd9")
+            if end < 0:
+                break
+            yield buf[:end + 2]
+            buf = buf[end + 2:]
 
 
 def main():
@@ -120,7 +160,18 @@ def main():
     ap.add_argument("--host", default="matrix-panel.local",
                     help="mDNS is flaky on some machines; pass the IP instead")
     ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--format", choices=("mjpeg", "raw"), default="mjpeg",
+                    help="mjpeg is about an eighth the size and is what makes "
+                         "30 fps fit; raw has no compression error at all and "
+                         "looks better, but needs 5.9 Mbps at 30 fps")
+    ap.add_argument("--quality", type=int, default=7,
+                    help="ffmpeg -q:v for --format mjpeg, 2 best .. 31 worst")
     ap.add_argument("--loop", action="store_true", help="repeat a file forever")
+    ap.add_argument("--crop", default=None,
+                    help="capture only part of the source: WxH or WxH+X+Y in "
+                         "source pixels. Use a 2:1 region to match the panel "
+                         "-- 256x128 is a 2x reduction and keeps text legible, "
+                         "128x64 is pixel perfect. Applies to any source")
     ap.add_argument("--fit", choices=("crop", "pad"), default="crop")
     ap.add_argument("--focus", type=float, default=0.5,
                     help="where --fit crop takes its band: 0 top, 1 bottom")
@@ -153,17 +204,22 @@ def main():
     ff = subprocess.Popen(build_ffmpeg(args), stdout=subprocess.PIPE)
     sent = 0
     try:
-        while True:
-            frame = ff.stdout.read(FRAME_BYTES)   # short read only at the end
-            if len(frame) < FRAME_BYTES:
-                if sent == 0:
-                    print("ffmpeg produced no frames -- its error is above.",
-                          file=sys.stderr)
-                break
-            # sendall blocks when the panel falls behind, which is the flow
-            # control: no queue to grow, no frames to drop, no drift.
-            sock.sendall(MAGIC + frame)
-            sent += 1
+        if args.format == "raw":
+            while True:
+                frame = ff.stdout.read(FRAME_BYTES)   # short read at the end
+                if len(frame) < FRAME_BYTES:
+                    break
+                # sendall blocks when the panel falls behind, which is the flow
+                # control: no queue to grow, no frames to drop, no drift.
+                sock.sendall(MAGIC_RAW + frame)
+                sent += 1
+        else:
+            for jpg in jpeg_frames(ff.stdout):
+                sock.sendall(MAGIC_JPEG + struct.pack("<I", len(jpg)) + jpg)
+                sent += 1
+        if sent == 0:
+            print("ffmpeg produced no frames -- its error is above.",
+                  file=sys.stderr)
     except (BrokenPipeError, ConnectionResetError):
         print("panel closed the connection", file=sys.stderr)
     except KeyboardInterrupt:

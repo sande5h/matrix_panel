@@ -8,6 +8,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 
+#include "rom/tjpgd.h"
+
 #include "hub75.h"
 #include "screen.h"
 #include "stream.h"
@@ -15,9 +17,18 @@
 static const char *TAG = "stream";
 
 #define PORT        8089
-#define MAGIC       "HB7S"
+#define MAGIC_RAW   "HB7S"      /* RGB888, exactly FRAME_BYTES of it        */
+#define MAGIC_JPEG  "HB7Z"      /* u32 length, then that many bytes of JPEG */
 #define MAGIC_LEN   4
 #define FRAME_BYTES (HUB75_WIDTH * HUB75_HEIGHT * 3)
+
+/* Raw is the best this panel can look -- no compression error at all -- but it
+ * costs 5.9 Mbps at 30 fps, and the refresh DMA leaves nowhere near that. A
+ * JPEG frame is about an eighth the size, which fits, and the ROM decoder has
+ * already shown it can keep up at 60 fps from flash. So the sender picks:
+ * quality when the link allows it, frame rate when it does not. */
+#define JPEG_MAX    16384
+#define JPEG_WORK   4096
 
 /* A sender that stops mid-frame without closing -- wifi dropping out, the Mac
  * sleeping -- would otherwise leave the panel parked on the stream screen
@@ -36,6 +47,37 @@ static uint32_t s_recvs;
 bool stream_active(void)
 {
     return s_active;
+}
+
+/* Same decoder plumbing as the flashed-clip player: one compressed frame in,
+ * one RGB888 frame out, no colour conversion because tjpgd already emits it. */
+typedef struct {
+    const uint8_t *jpeg;
+    size_t size, pos;
+    uint8_t *out;
+} jctx_t;
+
+static UINT jpeg_in(JDEC *jd, BYTE *buf, UINT len)
+{
+    jctx_t *c = (jctx_t *)jd->device;
+    size_t left = c->size - c->pos;
+    if (len > left) len = left;
+    if (buf) memcpy(buf, c->jpeg + c->pos, len);
+    c->pos += len;
+    return len;
+}
+
+static UINT jpeg_out(JDEC *jd, void *bitmap, JRECT *rect)
+{
+    jctx_t *c = (jctx_t *)jd->device;
+    const uint8_t *src = bitmap;
+    const size_t run = (size_t)(rect->right - rect->left + 1) * 3;
+
+    for (int y = rect->top; y <= rect->bottom; y++) {
+        memcpy(c->out + ((size_t)y * HUB75_WIDTH + rect->left) * 3, src, run);
+        src += run;
+    }
+    return 1;
 }
 
 /* recv returns what it has, not what was asked for, so every read loops. */
@@ -58,13 +100,14 @@ static bool read_all(int sock, uint8_t *dst, size_t n)
  * which would otherwise skew the picture a little further on every frame and
  * look like a hardware fault. Resyncing costs one byte at a time and is
  * bounded, so a garbage stream disconnects instead of spinning. */
-static bool sync_frame(int sock)
+static bool sync_frame(int sock, bool *is_jpeg)
 {
     uint8_t w[MAGIC_LEN];
     if (!read_all(sock, w, MAGIC_LEN)) return false;
 
     int slid = 0;
-    while (memcmp(w, MAGIC, MAGIC_LEN) != 0) {
+    while (memcmp(w, MAGIC_RAW, MAGIC_LEN) != 0 &&
+           memcmp(w, MAGIC_JPEG, MAGIC_LEN) != 0) {
         w[0] = w[1]; w[1] = w[2]; w[2] = w[3];
         if (!read_all(sock, w + MAGIC_LEN - 1, 1)) return false;
         if (++slid == 1) {
@@ -77,10 +120,11 @@ static bool sync_frame(int sock)
             return false;
         }
     }
+    *is_jpeg = (memcmp(w, MAGIC_JPEG, MAGIC_LEN) == 0);
     return true;
 }
 
-static void serve(int sock, uint8_t *frame)
+static void serve(int sock, uint8_t *frame, uint8_t *jpeg, void *work)
 {
     /* Where to go back to when the sender leaves. A stream arriving during an
      * upload should not strand the panel on the update screen. */
@@ -100,10 +144,36 @@ static void serve(int sock, uint8_t *frame)
     /* Leaves as soon as the screen changes under it, so toggling away from a
      * stream drops the connection rather than reading frames nobody sees. */
     while (screen_get() == SCREEN_STREAM) {
-        if (!sync_frame(sock)) break;
-        if (!read_all(sock, frame, FRAME_BYTES)) break;
+        bool is_jpeg = false;
+        if (!sync_frame(sock, &is_jpeg)) break;
+
+        uint32_t len = 0;
+        if (is_jpeg) {
+            uint8_t n[4];
+            if (!read_all(sock, n, 4)) break;
+            len = (uint32_t)n[0] | ((uint32_t)n[1] << 8) |
+                  ((uint32_t)n[2] << 16) | ((uint32_t)n[3] << 24);
+            if (len == 0 || len > JPEG_MAX) {
+                ESP_LOGE(TAG, "frame claims %lu bytes, dropping the sender",
+                         (unsigned long)len);
+                break;
+            }
+            if (!read_all(sock, jpeg, len)) break;
+        } else {
+            if (!read_all(sock, frame, FRAME_BYTES)) break;
+        }
 
         int64_t t0 = esp_timer_get_time();
+        if (is_jpeg) {
+            jctx_t ctx = { .jpeg = jpeg, .size = len, .pos = 0, .out = frame };
+            JDEC jd;
+            JRESULT res = jd_prepare(&jd, jpeg_in, work, JPEG_WORK, &ctx);
+            if (res == JDR_OK) res = jd_decomp(&jd, jpeg_out, 0);
+            if (res != JDR_OK) {
+                ESP_LOGW(TAG, "frame did not decode (tjpgd %d)", res);
+                continue;           /* hold the last frame, keep the sender */
+            }
+        }
         hub75_blit_rgb888(frame);
         busy += esp_timer_get_time() - t0;
 
@@ -137,8 +207,11 @@ static void listener(void *arg)
     /* One frame, allocated once. Internal RAM: it is written by the socket and
      * read by the blit on every frame. */
     uint8_t *frame = heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_8BIT);
-    if (!frame) {
-        ESP_LOGE(TAG, "no room for a %d byte frame", FRAME_BYTES);
+    uint8_t *jpeg  = heap_caps_malloc(JPEG_MAX, MALLOC_CAP_8BIT);
+    void    *work  = heap_caps_malloc(JPEG_WORK, MALLOC_CAP_8BIT);
+    if (!frame || !jpeg || !work) {
+        ESP_LOGE(TAG, "no room for the frame buffers");
+        free(frame); free(jpeg); free(work);
         vTaskDelete(NULL);
         return;
     }
@@ -183,7 +256,7 @@ static void listener(void *arg)
             struct timeval tv = { .tv_sec = RECV_TIMEOUT_S };
             setsockopt(cs, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-            serve(cs, frame);
+            serve(cs, frame, jpeg, work);
             close(cs);
         }
         close(ls);
