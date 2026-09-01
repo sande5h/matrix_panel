@@ -10,7 +10,7 @@ The output is raw frames, so size grows linearly: at 128x64 one frame is 16 KiB
 and one second at 15 fps is 240 KiB. Check it against the video partition
 before flashing -- that is the real limit on clip length.
 """
-import argparse, os, pathlib, struct, subprocess, sys, tempfile
+import argparse, concurrent.futures, os, pathlib, shutil, struct, subprocess, sys, tempfile
 
 MAGIC_RAW   = b"HB75"     # uncompressed RGB565 frames
 MAGIC_MJPEG = b"HB7J"     # per-frame JPEG, decoded on the device
@@ -25,13 +25,20 @@ def main():
                     help="seek to this timestamp first, e.g. 0:45 or 45")
     ap.add_argument("--duration", type=float, default=None,
                     help="seconds to take; raw frames are big, so this matters")
-    ap.add_argument("--limit-mib", type=float, default=5.0,
+    ap.add_argument("--limit-mib", type=float, default=12.9,
                     help="warn if the output exceeds the video partition")
     ap.add_argument("--mjpeg", action="store_true",
                     help="store JPEG frames instead of raw RGB565; roughly 10x "
                          "smaller, decoded on the ESP32 with the ROM tjpgd")
-    ap.add_argument("--quality", type=int, default=7,
-                    help="ffmpeg -q:v for --mjpeg, 2 best .. 31 worst")
+    ap.add_argument("--quality", type=int, default=85,
+                    help="libjpeg quality for --mjpeg, 0 worst .. 100 best. "
+                         "NOTE this is cjpeg's scale; it used to be ffmpeg's "
+                         "-q:v, where the numbers ran 2 (best) to 31 (worst)")
+    ap.add_argument("--chroma", choices=("420", "422", "444"), default="444",
+                    help="chroma sampling for --mjpeg. Colour resolution is "
+                         "worth more than quantisation steps at 128x64, so 444 "
+                         "is the default and 420 is the one to pick only when "
+                         "the decode budget is tight")
     ap.add_argument("--fit", choices=("pad", "crop"), default="pad",
                     help="pad letterboxes the whole frame; crop fills the panel "
                          "and throws away the overflow. A portrait source needs "
@@ -80,13 +87,42 @@ def main():
     base += ["-vf", vf]
 
     if args.mjpeg:
+        # Frames are encoded by cjpeg, not by ffmpeg. ffmpeg writes 4:2:2 and
+        # 4:4:4 with chroma sampling factors of 0x12, and the ESP32 ROM tjpgd
+        # accepts a luma factor of 0x11/0x21/0x22 but requires both chroma
+        # factors to be exactly 0x11 -- so those clips decode to nothing but
+        # JDR_FMT3. libjpeg writes the canonical factors for all three modes.
+        cjpeg = shutil.which("cjpeg")
+        if not cjpeg:
+            sys.exit("cjpeg not found -- brew install jpeg-turbo. ffmpeg's own "
+                     "mjpeg encoder cannot produce 422 or 444 the ESP32 will "
+                     "decode; see the comment above this message in the source.")
+        if args.quality <= 31:
+            print("warning: --quality is now libjpeg's 0..100 scale (higher is "
+                  "better), not ffmpeg's 2..31. %d is very low." % args.quality,
+                  file=sys.stderr)
+
+        sample = {"420": "2x2", "422": "2x1", "444": "1x1"}[args.chroma]
+
         # One file per frame: splitting a concatenated stream on markers is
         # doable but fragile, and this is not the slow part.
         with tempfile.TemporaryDirectory() as tmp:
-            subprocess.run(base + ["-c:v", "mjpeg", "-q:v", str(args.quality),
-                                   "-f", "image2", f"{tmp}/%06d.jpg"], check=True)
-            jpegs = [pathlib.Path(tmp, n).read_bytes()
-                     for n in sorted(os.listdir(tmp))]
+            subprocess.run(base + ["-c:v", "ppm", "-f", "image2",
+                                   f"{tmp}/%06d.ppm"], check=True)
+            names = sorted(os.listdir(tmp))
+
+            def encode(n):
+                src = os.path.join(tmp, n)
+                dst = src[:-4] + ".jpg"
+                subprocess.run([cjpeg, "-quality", str(args.quality),
+                                "-sample", sample, "-optimize",
+                                "-outfile", dst, src], check=True)
+                return pathlib.Path(dst).read_bytes()
+
+            # cjpeg is a subprocess, so threads are enough to keep the cores fed.
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                jpegs = list(pool.map(encode, names))
+
         count = len(jpegs)
         if not count:
             sys.exit("ffmpeg produced no frames")
