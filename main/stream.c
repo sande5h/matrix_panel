@@ -182,7 +182,10 @@ static void serve(int sock, uint8_t *frame, uint8_t *jpeg, void *work)
          * together say which side is the limit. */
         if ((++frames % 64) == 0) {
             int64_t now = esp_timer_get_time();
-            ESP_LOGI(TAG, "%lu frames, %.1f fps received | blit %.2f ms | "
+            /* "decode+blit" because a JPEG frame is decoded inside the same
+             * measurement -- calling it blit made a 12 ms number look like the
+             * blit had got twice as slow, when the blit had not changed. */
+            ESP_LOGI(TAG, "%lu frames, %.1f fps received | decode+blit %.2f ms | "
                           "socket %.1f ms over %.1f recvs (%.0f B each)",
                      (unsigned long)frames, 64.0e6f / (float)(now - mark),
                      busy / 64 / 1000.0f, s_wait_us / 64 / 1000.0f,
