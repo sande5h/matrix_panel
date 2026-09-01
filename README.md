@@ -50,23 +50,25 @@ All of it is in `components/hub75/include/hub75.h`:
 - `HUB75_PLANES` -- BCM depth, 6 gives 64 levels per channel
 - `HUB75_PCLK_HZ` -- pixel clock; lower it if you see ghosting
 
-At the defaults the refresh buffer is 50 KB of internal DMA RAM and the panel
-refreshes at ~473 Hz.
+At the defaults the refresh buffer is 48 KiB of internal DMA RAM (192 blocks of
+128 words) and the panel refreshes at ~488 Hz.
 
 ## How the buffer is laid out
 
 The whole frame is one flat array of 16 bit words, one word per pixel clock.
-It is split into blocks of `WIDTH + 4` words, one block per (row, bit plane)
-pair: `WIDTH` words of pixel data, then a four word blanking tail that pulses
-LAT and steps the address lines.
+It is split into blocks of exactly `WIDTH` words, one block per (row, bit
+plane) pair. There is no blanking tail: the shift register advances on every
+clock whether or not LAT is asserted, so any word appended after the row data
+shifts the image sideways by that many columns. LAT is asserted on the last
+data word instead, and the OE guard sits at the start of the next block.
 
 The panel displays whatever was latched at the end of the *previous* block, so
 inside block `k` the address lines and the OE window belong to block `k-1`.
 That one-block skew is what lets the entire refresh be a static buffer.
 
-Bit plane `p` is lit for `2^p` clocks, scaled so the top plane fills the whole
-shift window: 128, 64, 32, 16, 8, 4 clocks. Every OE window therefore hides
-inside the data shift and the buffer needs no padding words.
+Bit plane `p` is lit for `2^p` clocks, scaled so the top plane fills the usable
+part of the shift window: 125, 62, 31, 15, 7, 3 clocks. Every OE window
+therefore hides inside the data shift and the buffer needs no padding words.
 
 Brightness shortens the OE windows (`hub75_set_brightness`), so it costs no
 colour depth at the top of the range and crushes it at the bottom.
@@ -80,7 +82,14 @@ hub75_set_pixel(x, y, r, g, b);            // 8 bit per channel, gamma corrected
 hub75_fill(r, g, b);
 hub75_clear();
 hub75_set_brightness(160);                 // 0..255
+hub75_blit_rgb565(frame);                  // whole frame, packed 565
+hub75_blit_rgb888(frame);                  // whole frame, 3 bytes/pixel
 ```
+
+Prefer `hub75_blit_rgb888` where the source already has 8 bit channels. RGB565
+costs red and blue three bits each *before* the gamma table sees them, which
+after gamma leaves those channels with 27 distinct levels against green's 46 --
+33,534 colours instead of 262,144. The ROM JPEG decoder emits RGB888 anyway.
 
 Drawing writes straight into the live DMA buffer -- there is no double buffer,
 so a slow full-frame redraw can tear. A full 128x64 redraw is well under a
@@ -88,11 +97,17 @@ millisecond, which fits inside one refresh period.
 
 ## Playing video
 
-Frames are stored raw in a dedicated `video` partition -- no filesystem, no
-decoder on the device. Encode a clip you have the rights to:
+Frames live in a dedicated `video` partition -- no filesystem, no codec on the
+device beyond the ROM JPEG decoder. Encode a clip you have the rights to:
 
 ```
-./tools/encode_video.py clip.mp4 video.bin --fps 15
+./tools/encode_video.py clip.mp4 video.bin --fps 30 --mjpeg
+tools/push.sh video video.bin            # over wifi, no cable
+```
+
+Or over USB, which is the only route before the first flash:
+
+```
 parttool.py --port /dev/cu.usbmodem* write_partition \
     --partition-name video --input video.bin
 ```
@@ -105,16 +120,36 @@ Size is the real constraint, because the frames are uncompressed:
 
 | | |
 |---|---|
-| One frame | 16 KiB |
-| One second at 15 fps | 240 KiB |
-| The 5M partition | ~21 seconds |
+| One raw frame | 16 KiB |
+| One second raw at 15 fps | 240 KiB |
+| The 12.9M partition, raw | ~55 seconds |
+| The 12.9M partition, `--mjpeg` | ~4.5 minutes at 30 fps |
 
-On a 16 MB module the partition can grow to about 13M in `partitions.csv`,
-which is roughly a minute. Longer than that wants an SD card or a codec.
+`--mjpeg` stores each frame as a JPEG and decodes it with the ROM tjpgd, which
+is roughly twenty times smaller for the same clip and holds 60 fps. Raw is
+there for the cases where decode time matters more than space.
 
-`main/video.c` reads one frame at a time into a 16 KiB buffer and calls
-`hub75_blit_rgb565()`, which walks each (row, plane) block once rather than
-doing six read-modify-writes per pixel.
+`--chroma` selects 420, 422 or 444, and **422 is the default**: compared at
+equal bytes per frame it is more accurate than both 420 (which costs 22% more
+bytes for 27% more error) and 444 (whose full vertical chroma costs more than
+it returns).
+
+Frames are compressed by **cjpeg**, not by ffmpeg, which is a hard dependency
+(`brew install jpeg-turbo`). ffmpeg writes 4:2:2 and 4:4:4 with chroma sampling
+factors of `0x12`; the ESP32 ROM tjpgd accepts a luma factor of `0x11`, `0x21`
+or `0x22` but requires both chroma factors to be exactly `0x11`, so those clips
+decode to nothing but `JDR_FMT3` -- a log full of `did not decode (tjpgd 8)`
+and a frozen panel. libjpeg writes the canonical factors and all three modes
+work.
+
+`--quality` is therefore libjpeg's **0..100** scale, higher being better -- not
+ffmpeg's old `-q:v`, where 2 was best and 31 worst. The script warns if you
+pass a value low enough to look like the old scale.
+
+Chroma costs decode time, so check the player's `ms/frame` heartbeat before
+pairing it with 60 fps: the budget there is 16.7 ms a frame and 4:2:0 already
+used 91% of it. **30 fps at `--chroma 422 --quality 89` looks better than
+60 fps at 4:2:0**, and tears half as often.
 
 ## Control API
 
@@ -126,11 +161,16 @@ over mDNS so a DHCP change does not break anything pointing at it.
 | `GET /` | status page with buttons |
 | `GET /status` | current screen, IP, uptime and the last quota reading, as JSON |
 | `GET`/`POST /toggle` | advance to the next screen |
-| `GET /screen?s=clock\|video` | select one directly |
+| `GET /screen?s=clock\|claude\|nowplaying\|video` | select one directly |
+| `POST /nowplaying` | JSON: what the Mac is playing |
+| `POST /nowplaying/art` | 48x48 RGB565, exactly 4608 bytes |
+| `POST /video[?play=1]` | replace the clip, no cable |
+| `POST /ota` | replace the firmware, then reboot |
+| `POST /reboot` | reboot |
 
-Two screens: **clock** and **video** (the clip in the video partition). Video
-playback checks the current screen once per frame, so switching away interrupts
-a clip instead of waiting for it to end.
+Four screens: **clock**, **claude**, **nowplaying** and **video** (the clip in
+the video partition). Video playback checks the current screen once per frame,
+so switching away interrupts a clip instead of waiting for it to end.
 
 The clock face is a minute sweep on the top row, the date, the time at 3x, and
 the Claude quota as two bare bars along the bottom four rows and the four rows
@@ -161,6 +201,59 @@ free tier asks for a link back.
 It polls `/status` every 30 s, so the icon tracks changes made from the web
 page or after a panel reboot.
 
+The dropdown also uploads:
+
+- **Upload video...** takes a `.bin` from the encoder, or *any* video file --
+  an mp4 is encoded first with `--fps 30 --mjpeg --fit crop` and then pushed.
+  Reach for the command line when a clip needs `--rotate` or `--focus`.
+- **Flash firmware...** posts `build/matrix_panel.bin`, after a confirmation,
+  because it reboots the panel.
+
+curl does the transfer, so a 3 MB image streams from disk instead of going
+through Lua, and its progress meter is parsed back out of stderr to drive the
+menu bar title. The panel draws its own progress bar at the same time. Both
+pollers pause during an upload -- the panel serves one request at a time, so a
+status poll would just queue behind several megabytes.
+
+## Updating over wifi
+
+Both the firmware and the clip can be replaced without touching the panel.
+
+```
+idf.py build
+tools/push.sh fw                  # POST build/matrix_panel.bin to /ota
+tools/push.sh video demon.bin     # POST a clip to /video, and play it
+```
+
+The same two uploads are on the web page at `http://matrix-panel.local:8088/`,
+with a progress bar, which is the easier route from a phone.
+
+While an upload runs the panel shows its own progress screen -- a percentage
+and a bar -- and goes back to whatever it was showing when it finishes. A
+failure stays up for five seconds with the reason, so a push that dies halfway
+is not silently invisible.
+
+Neither upload can leave the panel unbootable:
+
+- **Firmware** is written to whichever app slot is *not* running, verified by
+  `esp_ota_end()` before it is made bootable, and the reply is sent before the
+  reboot. A dropped connection leaves the running slot untouched. If the new
+  image boots but cannot get as far as starting its HTTP server, the bootloader
+  rolls back to the previous slot on the next reset
+  (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`), so a bad push costs a power cycle
+  rather than a walk over with a cable.
+- **Video** holds the 16 byte header back and writes it last, so an interrupted
+  upload leaves an unplayable partition rather than one that plays garbage. The
+  header is validated -- magic, 128x64, non-zero fps -- before anything is
+  erased, so pushing the wrong file is a 400 with the old clip still intact.
+  The player is stopped and waited out first; it never reads flash that is
+  being erased underneath it.
+
+> The partition table changed to make room for two app slots, so the **first**
+> build after this needs a full USB flash (`idf.py flash`) to rewrite the
+> table. Every one after that can go over wifi. Rewriting the table also wipes
+> the video partition, so re-push the clip afterwards.
+
 ## Claude quota
 
 The two bars come from the `ccusage_server.py` that already serves the
@@ -177,10 +270,12 @@ quota rows stay blank.
 
 ```
 idf.py set-target esp32s3
-idf.py build flash monitor
+idf.py build flash monitor        # USB, needed once for the partition table
+tools/push.sh fw                  # every time after that
 ```
 
-`main.c` runs a red/green/blue/white smoke test and then an animated plasma.
+`PIN_CHECK` and `SELF_TEST` at the top of `main.c` turn on the wiring checks;
+both are off by default.
 
 ## Status
 
