@@ -1,8 +1,19 @@
-# Sized for an 8 MB module so it fits either board; on the 16 MB N16R8 the
-# video partition can grow to about 13M. One second of 128x64 RGB565 at 15 fps
-# is 240 KiB, so 5M holds roughly 21 seconds.
-# Name,   Type, SubType, Offset,   Size,  Flags
-nvs,      data, nvs,     0x9000,   0x6000,
-phy_init, data, phy,     0xf000,   0x1000,
-factory,  app,  factory, 0x10000,  2M,
-video,    data, spiffs,  ,         5M,
+# Two app slots so the panel can update itself over HTTP, and the rest of the
+# flash given to video. Sized for the 16 MB N16R8; the table fills it exactly.
+#
+# An app slot must start on a 64 KiB boundary, which is why the offsets are
+# written out rather than left blank -- a stray size change here silently
+# shifts ota_1 and the bootloader then refuses the table.
+#
+# 1.5M per slot against a 0.93 MB application leaves about 580 KB of growth.
+# Watch it: an image that outgrows its slot is rejected by /ota with a 413 and
+# can only be delivered over USB. `idf.py size` prints the number to compare.
+#
+# 12.94M of video is about 4.5 minutes of MJPEG at 30 fps, or 55 seconds raw.
+# Name,     Type, SubType, Offset,     Size, Flags
+nvs,        data, nvs,     0x9000,   0x4000,
+otadata,    data, ota,     0xd000,   0x2000,
+phy_init,   data, phy,     0xf000,   0x1000,
+ota_0,      app,  ota_0,   0x10000,  0x180000,
+ota_1,      app,  ota_1,   0x190000, 0x180000,
+video,      data, spiffs,  0x310000, 0xCF0000,
