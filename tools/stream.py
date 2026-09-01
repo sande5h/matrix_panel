@@ -73,10 +73,17 @@ def build_ffmpeg(args):
         # asking for that keeps the whole path free of colour conversion;
         # cameras usually offer uyvy422 and rarely anything RGB.
         pix = args.pixel_format or ("bgr0" if args.source == "screen" else "uyvy422")
-        cmd += ["-f", "avfoundation", "-pixel_format", pix,
-                "-framerate", str(args.fps)]
+        cmd += ["-f", "avfoundation", "-pixel_format", pix]
         if args.source == "screen":
+            # No -framerate here. A screen device refuses it ("Configuration of
+            # video device failed, falling back to default") and then never
+            # delivers a frame -- the capture hangs rather than erroring, so it
+            # looks like a slow network. The fps= filter below sets the output
+            # rate anyway, so asking the device for one buys nothing.
             cmd += ["-capture_cursor", "1"]
+        else:
+            # A camera does want it: it is how a capture mode gets selected.
+            cmd += ["-framerate", str(args.fps)]
         cmd += ["-i", args.device or pick_device(args.source)]
     else:
         # -re paces a file at its own speed. Without it ffmpeg decodes as fast
