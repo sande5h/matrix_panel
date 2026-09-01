@@ -47,7 +47,7 @@ local GLYPHS = { clock = "🕒", claude = "📊", nowplaying = "🎵",
 
 local function setState(screen)
     lastScreen = screen
-    if not menu then return end
+    if not menu or M.uploading then return end   -- an upload owns the title
 
     local img = screen and ICONS[screen]
     if img then
@@ -65,6 +65,9 @@ end
 -- the same JSON for all of them, so one handler keeps the menu bar in step
 -- whatever we asked for.
 local function call(path, andThen)
+    -- The panel's HTTP server handles one request at a time, so a status poll
+    -- during an upload would just sit in the queue behind several megabytes.
+    if M.uploading then return end
     hs.http.asyncGet("http://" .. host() .. path, nil, function(status, body)
         if status ~= 200 then
             pinnedHost = nil          -- fall back to the name next time
@@ -94,6 +97,139 @@ local function refresh()
     call("/status")
 end
 
+-- ---------------------------------------------------------------- uploading
+--
+-- The panel takes both firmware and clips over HTTP, so neither needs a cable
+-- or a terminal. curl does the transfer -- it streams from disk rather than
+-- reading the file into Lua, which matters for a 3 MB image -- and its
+-- progress meter is parsed back out of stderr to drive the menu bar title.
+--
+-- The panel draws its own progress bar at the same time, so the two agree.
+
+local CURL    = "/usr/bin/curl"
+local REPO    = os.getenv("HOME") .. "/matrix_panel"
+local ENCODER = REPO .. "/tools/encode_video.py"
+local FIRMWARE_DEFAULT = REPO .. "/build/matrix_panel.bin"
+
+-- Anything else is assumed to be an already encoded blob.
+local VIDEO_EXT = { mp4 = true, mov = true, mkv = true, webm = true,
+                    m4v = true, avi = true, gif = true }
+
+local uploadTask = nil
+
+local function notify(title, text)
+    hs.notify.new({ title = title, informativeText = text,
+                    withdrawAfter = 6 }):send()
+end
+
+-- Title instead of icon while something is in flight: the icon means "this is
+-- what the panel is showing", and during an upload that is not what it means.
+local function showProgress(label, pct)
+    if not menu then return end
+    menu:setIcon(nil)
+    menu:setTitle(pct and string.format("%s %d%%", label, pct) or label)
+    menu:setTooltip("matrix panel: " .. label)
+end
+
+local function uploadDone(ok, what, detail)
+    M.uploading = nil
+    uploadTask = nil
+    notify(ok and (what .. " uploaded") or (what .. " failed"), detail or "")
+    -- An OTA reboots the panel, so give it time to come back before asking.
+    hs.timer.doAfter(ok and what == "firmware" and 12 or 1, refresh)
+end
+
+local function transfer(what, path, url)
+    M.uploading = what
+    showProgress(what:upper(), 0)
+
+    uploadTask = hs.task.new(CURL,
+        function(rc, out, err)
+            if rc == 0 then
+                uploadDone(true, what, out and out:sub(1, 200) or "")
+            else
+                -- --fail-with-body keeps the panel's own error text on stdout.
+                local why = (out and out:match("%S") and out)
+                         or (err and err:match("[^\r\n]+$")) or ("curl exit " .. rc)
+                uploadDone(false, what, why:sub(1, 200))
+            end
+        end,
+        function(_, _, stderr)
+            -- curl -# writes "####   45.0%" repeatedly, separated by \r.
+            local pct = stderr and stderr:match("([%d%.]+)%%[^%%]*$")
+            if pct then showProgress(what:upper(), math.floor(tonumber(pct))) end
+            return true
+        end,
+        { "-#", "--fail-with-body", "--max-time", "600",
+          "-H", "Content-Type: application/octet-stream",
+          "--data-binary", "@" .. path, url })
+
+    uploadTask:start()
+end
+
+-- ffmpeg first if the file is not already a blob. The defaults here match what
+-- the panel wants; --rotate, --focus and the rest are worth the command line.
+local function encodeThenUpload(src)
+    local out = os.tmpname() .. ".bin"
+    M.uploading = "video"
+    showProgress("ENCODING")
+
+    hs.task.new(ENCODER,
+        function(rc, stdout, stderr)
+            if rc ~= 0 then
+                M.uploading = nil
+                uploadDone(false, "encode",
+                           (stderr or stdout or ""):match("[^\r\n]+$") or "")
+                return
+            end
+            transfer("video", out, "http://" .. host() .. "/video?play=1")
+        end,
+        { src, out, "--fps", "30", "--mjpeg", "--quality", "9", "--fit", "crop" })
+        :start()
+end
+
+local function uploadVideo()
+    if M.uploading then return end
+    local pick = hs.dialog.chooseFileOrFolder(
+        "Choose a clip: a .bin from encode_video.py, or any video to encode",
+        os.getenv("HOME") .. "/Downloads", true, false, false,
+        { "bin", "mp4", "mov", "mkv", "webm", "m4v", "avi", "gif" })
+    if not pick or not pick["1"] then return end
+
+    local path = pick["1"]
+    local ext = (path:match("%.([^.]+)$") or ""):lower()
+    if VIDEO_EXT[ext] then
+        encodeThenUpload(path)
+    else
+        transfer("video", path, "http://" .. host() .. "/video?play=1")
+    end
+end
+
+local function flashFirmware()
+    if M.uploading then return end
+
+    local path = FIRMWARE_DEFAULT
+    if not hs.fs.attributes(path) then
+        local pick = hs.dialog.chooseFileOrFolder(
+            "Choose a firmware image", REPO, true, false, false, { "bin" })
+        if not pick or not pick["1"] then return end
+        path = pick["1"]
+    end
+
+    -- Worth a confirmation: this one reboots the panel. It cannot brick it --
+    -- the image lands in the spare slot and the bootloader rolls back if it
+    -- cannot get its server up -- but it does interrupt whatever is on screen.
+    local size = hs.fs.attributes(path).size
+    if hs.dialog.blockAlert("Flash the panel?",
+            string.format("%s\n%.1f MB -- the panel reboots when it lands.",
+                          path, size / 1048576),
+            "Flash", "Cancel") ~= "Flash" then
+        return
+    end
+    transfer("firmware", path, "http://" .. host() .. "/ota")
+end
+
+
 if menu then
     setState(nil)
     menu:setClickCallback(toggle)
@@ -112,6 +248,12 @@ if menu then
             item("claude", "Claude quota"),
             item("nowplaying", "Now playing"),
             item("video", "Video"),
+            { title = "-" },
+            { title = "-" },
+            { title = M.uploading and "Uploading..." or "Upload video...",
+              disabled = M.uploading ~= nil, fn = uploadVideo },
+            { title = "Flash firmware...",
+              disabled = M.uploading ~= nil, fn = flashFirmware },
             { title = "-" },
             { title = "Open control page", fn = function()
                 hs.urlevent.openURL("http://" .. host() .. "/")
@@ -146,7 +288,6 @@ end
 
 local PROBE  = os.getenv("HOME") .. "/.hammerspoon/nowplaying.applescript"
 local FFMPEG = "/opt/homebrew/bin/ffmpeg"
-local CURL   = "/usr/bin/curl"
 
 local lastPayload, lastPush = nil, 0
 local lastArt, lastArtPush = nil, 0
@@ -215,6 +356,7 @@ local function fromMusic()
 end
 
 local function pushNowPlaying()
+    if M.uploading then return end   -- do not queue behind a multi-MB POST
     local m = fromMusic()
     if m then push(m) return end
 
