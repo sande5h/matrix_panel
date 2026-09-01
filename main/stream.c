@@ -26,6 +26,13 @@ static const char *TAG = "stream";
 
 static volatile bool s_active;
 
+/* Where a frame's time actually goes. Guessing at this cost three rounds of
+ * plausible-sounding config changes that each did nothing, so measure it:
+ * a long wait means the bytes are not arriving, while a short wait spread over
+ * many calls means the cost is per-call and the bytes are already here. */
+static int64_t  s_wait_us;
+static uint32_t s_recvs;
+
 bool stream_active(void)
 {
     return s_active;
@@ -36,7 +43,10 @@ static bool read_all(int sock, uint8_t *dst, size_t n)
 {
     size_t got = 0;
     while (got < n) {
+        int64_t t0 = esp_timer_get_time();
         int r = recv(sock, dst + got, n - got, 0);
+        s_wait_us += esp_timer_get_time() - t0;
+        s_recvs++;
         if (r <= 0) return false;       /* closed, or the timeout expired */
         got += (size_t)r;
     }
@@ -84,6 +94,8 @@ static void serve(int sock, uint8_t *frame)
     uint32_t frames = 0;
     int64_t mark = esp_timer_get_time();
     int64_t busy = 0;
+    s_wait_us = 0;
+    s_recvs = 0;
 
     /* Leaves as soon as the screen changes under it, so toggling away from a
      * stream drops the connection rather than reading frames nobody sees. */
@@ -100,11 +112,16 @@ static void serve(int sock, uint8_t *frame)
          * together say which side is the limit. */
         if ((++frames % 64) == 0) {
             int64_t now = esp_timer_get_time();
-            ESP_LOGI(TAG, "%lu frames, %.1f fps received, %.2f ms/frame blitting",
+            ESP_LOGI(TAG, "%lu frames, %.1f fps received | blit %.2f ms | "
+                          "socket %.1f ms over %.1f recvs (%.0f B each)",
                      (unsigned long)frames, 64.0e6f / (float)(now - mark),
-                     busy / 64 / 1000.0f);
+                     busy / 64 / 1000.0f, s_wait_us / 64 / 1000.0f,
+                     s_recvs / 64.0f,
+                     s_recvs ? (float)(FRAME_BYTES * 64) / s_recvs : 0.0f);
             mark = now;
             busy = 0;
+            s_wait_us = 0;
+            s_recvs = 0;
         }
     }
 
