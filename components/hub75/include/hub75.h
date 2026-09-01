@@ -34,7 +34,7 @@ extern "C" {
 /* Pixel clock. A 128 wide panel needs twice the clocks per row, so this is
  * pushed up to keep the refresh rate sane. Drop to 8 MHz first if you see
  * ghosting or smeared columns; the ribbon cable is usually the limit. */
-#define HUB75_PCLK_HZ (12 * 1000 * 1000)
+#define HUB75_PCLK_HZ (6 * 1000 * 1000)
 
 /* Clocks at the start of each row block with the panel blanked, covering the
  * latch and the address lines settling. Raise it if row content ever ghosts
