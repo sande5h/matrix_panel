@@ -89,6 +89,14 @@ esp_err_t net_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
 
+    /* The default is WIFI_PS_MIN_MODEM, which sleeps the radio between beacons
+     * and pushes the round trip time to tens of milliseconds. TCP throughput is
+     * window / RTT, so with the stock 5760 byte window that caps a stream at
+     * about 110 KB/s -- four frames a second -- and the sleeping also makes the
+     * AP time out its block ack agreements, which is the DELBA reason 39 churn
+     * in the log. The panel is mains powered and has nothing to save. */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
     if (mdns_init() == ESP_OK) {
         mdns_hostname_set(MDNS_HOSTNAME);
         mdns_instance_name_set("matrix panel");

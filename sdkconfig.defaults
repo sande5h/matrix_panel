@@ -21,3 +21,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # starting its HTTP server -- see esp_ota_mark_app_valid_cancel_rollback() in
 # app_main. Without this a bad push means walking over with a USB cable.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Streaming frames is a sustained bulk transfer, and TCP throughput is
+# window / RTT. The stock 5760 byte window needs a round trip under 5 ms to
+# carry 30 fps of RGB888; a bigger window keeps it working when the link is
+# not that good. Costs heap per connection, which the 224 KB of free internal
+# RAM can afford.
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
