@@ -15,7 +15,7 @@ decoding a JPEG is the expensive part of playback, and there is no JPEG here.
 The panel listens on 8089 and shows whatever arrives for as long as it keeps
 arriving; close the sender and it goes back to what it was showing before.
 """
-import argparse, socket, struct, subprocess, sys
+import argparse, re, socket, struct, subprocess, sys
 
 WIDTH, HEIGHT = 128, 64
 FRAME_BYTES = WIDTH * HEIGHT * 3
@@ -23,22 +23,61 @@ MAGIC = b"HB7S"
 PORT = 8089
 
 
+def probe_devices():
+    """[(index, name)] of avfoundation video devices. It prints the table to
+    stderr and exits non-zero, which is normal -- there is no input to open."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-f", "avfoundation",
+                          "-list_devices", "true", "-i", ""],
+                         capture_output=True, text=True).stderr
+    devices, video = [], False
+    for line in out.splitlines():
+        if "video devices" in line:
+            video = True
+            continue
+        if "audio devices" in line:
+            video = False
+            continue
+        m = re.search(r"\[(\d+)\]\s+(.*)$", line)
+        if video and m:
+            devices.append((int(m.group(1)), m.group(2).strip()))
+    return devices
+
+
 def list_devices():
-    """avfoundation prints its device table to stderr and then exits non-zero,
-    which is normal -- there is no input to open."""
-    subprocess.run(["ffmpeg", "-hide_banner", "-f", "avfoundation",
-                    "-list_devices", "true", "-i", ""], check=False)
+    for i, name in probe_devices():
+        kind = "screen" if "capture screen" in name.lower() else "camera"
+        print("  [%d] %-28s (%s)" % (i, name, kind))
+
+
+def pick_device(kind):
+    """Indices are not stable across machines -- a Mac mini with no camera has
+    the screens at 0 and 1, a laptop has the camera at 0 and screens after it.
+    So find the device by name rather than assuming a number."""
+    devices = probe_devices()
+    if not devices:
+        sys.exit("ffmpeg listed no avfoundation video devices")
+    want_screen = (kind == "screen")
+    for i, name in devices:
+        if ("capture screen" in name.lower()) == want_screen:
+            return "%d:none" % i
+    sys.exit("no %s found. Devices are:\n%s" %
+             (kind, "\n".join("  [%d] %s" % d for d in devices)))
 
 
 def build_ffmpeg(args):
     cmd = ["ffmpeg", "-hide_banner", "-v", "error"]
 
-    if args.source == "screen":
-        cmd += ["-f", "avfoundation", "-capture_cursor", "1",
-                "-framerate", str(args.fps), "-i", args.device or "1:none"]
-    elif args.source == "camera":
-        cmd += ["-f", "avfoundation",
-                "-framerate", str(args.fps), "-i", args.device or "0:none"]
+    if args.source in ("screen", "camera"):
+        # avfoundation refuses ffmpeg's default yuv420p and lists what it does
+        # support, which differs per device. Screens hand out packed RGB, so
+        # asking for that keeps the whole path free of colour conversion;
+        # cameras usually offer uyvy422 and rarely anything RGB.
+        pix = args.pixel_format or ("bgr0" if args.source == "screen" else "uyvy422")
+        cmd += ["-f", "avfoundation", "-pixel_format", pix,
+                "-framerate", str(args.fps)]
+        if args.source == "screen":
+            cmd += ["-capture_cursor", "1"]
+        cmd += ["-i", args.device or pick_device(args.source)]
     else:
         # -re paces a file at its own speed. Without it ffmpeg decodes as fast
         # as it can and the whole clip arrives in a couple of seconds.
@@ -79,8 +118,15 @@ def main():
     ap.add_argument("--focus", type=float, default=0.5,
                     help="where --fit crop takes its band: 0 top, 1 bottom")
     ap.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0)
+    ap.add_argument("--pixel-format", default=None,
+                    help="avfoundation input format. Defaults to bgr0 for the "
+                         "screen and uyvy422 for a camera; if ffmpeg says the "
+                         "device does not support it, it prints the list that "
+                         "device does accept -- pass one of those")
     ap.add_argument("--device", default=None,
-                    help="avfoundation device for screen/camera, e.g. '2:none'")
+                    help="avfoundation device for screen/camera, e.g. '2:none'. "
+                         "Found by name if not given, since the indices differ "
+                         "between machines")
     ap.add_argument("--list", action="store_true",
                     help="list capture devices and exit")
     args = ap.parse_args()
@@ -103,6 +149,9 @@ def main():
         while True:
             frame = ff.stdout.read(FRAME_BYTES)   # short read only at the end
             if len(frame) < FRAME_BYTES:
+                if sent == 0:
+                    print("ffmpeg produced no frames -- its error is above.",
+                          file=sys.stderr)
                 break
             # sendall blocks when the panel falls behind, which is the flow
             # control: no queue to grow, no frames to drop, no drift.
