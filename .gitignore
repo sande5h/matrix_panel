@@ -9,3 +9,10 @@ dependencies.lock
 demo_video.bin
 *.bin
 main/secrets.h
+
+# Source clips and generated frame blobs stay local; only tools are tracked.
+*.mp4
+*.webm
+*.mov
+__pycache__/
+sdkconfig.bak-*
