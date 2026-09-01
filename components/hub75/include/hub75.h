@@ -15,7 +15,7 @@
  *   Panel: 128x64, 1/32 scan.
  *   OE 21   CLK 47   LAT 14
  *   A 1   B 12   C 2   D 13   E 11
- *   R1 4   G1 9   B1 5   R2 6   G2 10   B2 7
+ *   R1 8   G1 9   B1 5   R2 6   G2 10   B2 7   (R1 moved off a dead GPIO 4)
  */
 #pragma once
 
@@ -69,6 +69,12 @@ void hub75_clear(void);
  * (row, plane) block once and writes both halves of a column in one word.
  * Intended for video, where a full frame is redrawn every time. */
 void hub75_blit_rgb565(const uint16_t *frame);
+
+/* As above but from 8 bit channels, HUB75_WIDTH * HUB75_HEIGHT * 3 bytes.
+ * Prefer this where the source already has 8 bit channels: RGB565 drops three
+ * bits of red and blue, which after gamma correction leaves those channels
+ * with 27 distinct levels instead of 64. */
+void hub75_blit_rgb888(const uint8_t *frame);
 
 /* Global brightness, 0..255. Implemented by shortening the OE windows, so it
  * costs no colour depth at the top end but crushes it at the bottom. */

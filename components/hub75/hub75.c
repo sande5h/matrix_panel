@@ -359,6 +359,43 @@ void hub75_blit_rgb565(const uint16_t *frame)
     }
 }
 
+/* The same walk as above, but from 8 bit channels. RGB565 costs red and blue
+ * three bits each before the gamma table ever sees them, which after gamma
+ * leaves only 27 distinct levels on those two channels against green's 46.
+ * Feeding the full byte in gets all 64 levels the planes can express, and the
+ * decoder hands us RGB888 anyway -- the conversion was pure loss. Costs one
+ * byte per pixel more in the caller's frame buffer. */
+void hub75_blit_rgb888(const uint8_t *frame)
+{
+    if (!s_buf || !frame) return;
+
+    for (int row = 0; row < HUB75_ROWS; row++) {
+        const uint8_t *top = frame + (size_t)row * HUB75_WIDTH * 3;
+        const uint8_t *bot = frame + (size_t)(row + HUB75_ROWS) * HUB75_WIDTH * 3;
+
+        uint16_t *blk[HUB75_PLANES];
+        for (int p = 0; p < HUB75_PLANES; p++) {
+            blk[p] = &s_buf[BLOCK_BASE(BLOCK_OF(row, p))];
+        }
+
+        for (int x = 0; x < HUB75_WIDTH; x++) {
+            uint8_t tr = s_gamma[top[0]], tg = s_gamma[top[1]], tb = s_gamma[top[2]];
+            uint8_t br = s_gamma[bot[0]], bg = s_gamma[bot[1]], bb = s_gamma[bot[2]];
+            top += 3;
+            bot += 3;
+
+            for (int p = 0; p < HUB75_PLANES; p++) {
+                uint16_t bits = (uint16_t)(
+                      (((tr >> p) & 1) << BIT_R1) | (((tg >> p) & 1) << BIT_G1)
+                    | (((tb >> p) & 1) << BIT_B1) | (((br >> p) & 1) << BIT_R2)
+                    | (((bg >> p) & 1) << BIT_G2) | (((bb >> p) & 1) << BIT_B2));
+                uint16_t *w = &blk[p][x];
+                *w = (uint16_t)((*w & ~MASK_RGB) | bits);
+            }
+        }
+    }
+}
+
 void hub75_fill(uint8_t r, uint8_t g, uint8_t b)
 {
     for (int y = 0; y < HUB75_HEIGHT; y++) {

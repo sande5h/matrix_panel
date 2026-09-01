@@ -13,30 +13,23 @@
 
 static const char *TAG = "video";
 
-/* Written by tools/encode_video.py. Little endian, 16 byte header. */
-#define MAGIC_RAW   0x35374248u        /* "HB75" -- RGB565 frames, no index   */
-#define MAGIC_MJPEG 0x4A374248u        /* "HB7J" -- JPEG frames, u32 size each */
-#define HEADER_BYTES 16
-
 /* tjpgd needs a scratch pool; ~3.1 KiB is the documented minimum for baseline
  * JPEG, and this is not worth economising on. */
 #define JPEG_WORK_BYTES 4096
 
-typedef struct {
-    uint32_t magic;
-    uint16_t width;
-    uint16_t height;
-    uint16_t fps;
-    uint32_t frames;
-} __attribute__((packed)) video_header_t;
+/* Set for as long as the player is reading the partition, so an upload can
+ * wait it out. Written only by the render task, read only by the HTTP task. */
+static volatile bool s_busy;
 
-/* Handed to tjpgd as its "device": one compressed frame in, one RGB565 frame
- * out. The ROM decoder emits RGB888, so the output callback converts. */
+/* Handed to tjpgd as its "device": one compressed frame in, one RGB888 frame
+ * out. The ROM decoder emits RGB888 and the panel's gamma table takes 8 bit
+ * channels, so nothing converts -- an RGB565 round trip here used to cost
+ * three bits of red and blue for nothing. */
 typedef struct {
     const uint8_t *jpeg;
     size_t size;
     size_t pos;
-    uint16_t *out;
+    uint8_t *out;
 } jpeg_ctx_t;
 
 static UINT jpeg_in(JDEC *jd, BYTE *buf, UINT len)
@@ -53,13 +46,13 @@ static UINT jpeg_out(JDEC *jd, void *bitmap, JRECT *rect)
 {
     jpeg_ctx_t *c = (jpeg_ctx_t *)jd->device;
     const uint8_t *src = bitmap;
+    const size_t run = (size_t)(rect->right - rect->left + 1) * 3;
 
+    /* A row of the MCU at a time. Same layout on both sides, so this is a
+     * copy rather than the per-pixel conversion it used to be. */
     for (int y = rect->top; y <= rect->bottom; y++) {
-        uint16_t *dst = c->out + (size_t)y * HUB75_WIDTH + rect->left;
-        for (int x = rect->left; x <= rect->right; x++) {
-            uint8_t r = *src++, g = *src++, b = *src++;
-            *dst++ = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
-        }
+        memcpy(c->out + ((size_t)y * HUB75_WIDTH + rect->left) * 3, src, run);
+        src += run;
     }
     return 1;
 }
@@ -76,7 +69,7 @@ static bool play_raw(const esp_partition_t *part, const video_header_t *hdr,
     int64_t next = esp_timer_get_time();
     for (uint32_t i = 0; i < hdr->frames; i++) {
         if (keep_going && !keep_going()) break;
-        size_t off = HEADER_BYTES + (size_t)i * frame_bytes;
+        size_t off = VIDEO_HEADER_BYTES + (size_t)i * frame_bytes;
         if (esp_partition_read(part, off, frame, frame_bytes) != ESP_OK) break;
         hub75_blit_rgb565(frame);
 
@@ -98,7 +91,7 @@ static bool play_mjpeg(const esp_partition_t *part, const video_header_t *hdr,
      * saves a flash read per frame. */
     size_t index_bytes = (size_t)hdr->frames * sizeof(uint32_t);
     uint32_t *sizes = heap_caps_malloc(index_bytes, MALLOC_CAP_8BIT);
-    uint16_t *frame = heap_caps_malloc((size_t)hdr->width * hdr->height * 2, MALLOC_CAP_8BIT);
+    uint8_t *frame = heap_caps_malloc((size_t)hdr->width * hdr->height * 3, MALLOC_CAP_8BIT);
     void *work = heap_caps_malloc(JPEG_WORK_BYTES, MALLOC_CAP_8BIT);
     uint8_t *jpeg = NULL;
 
@@ -106,7 +99,7 @@ static bool play_mjpeg(const esp_partition_t *part, const video_header_t *hdr,
         ESP_LOGE(TAG, "out of memory for the decoder");
         goto done;
     }
-    if (esp_partition_read(part, HEADER_BYTES, sizes, index_bytes) != ESP_OK) {
+    if (esp_partition_read(part, VIDEO_HEADER_BYTES, sizes, index_bytes) != ESP_OK) {
         ESP_LOGE(TAG, "could not read the frame index");
         goto done;
     }
@@ -122,12 +115,15 @@ static bool play_mjpeg(const esp_partition_t *part, const video_header_t *hdr,
     }
     ESP_LOGI(TAG, "mjpeg: largest frame %lu bytes", (unsigned long)biggest);
 
-    size_t off = HEADER_BYTES + index_bytes;
+    size_t off = VIDEO_HEADER_BYTES + index_bytes;
     int64_t next = esp_timer_get_time();
     int64_t mark = next;
+    int64_t busy = 0;          /* time actually spent decoding, per heartbeat */
 
     for (uint32_t i = 0; i < hdr->frames; i++) {
         if (keep_going && !keep_going()) { ok = true; goto done; }
+
+        int64_t t0 = esp_timer_get_time();
         if (esp_partition_read(part, off, jpeg, sizes[i]) != ESP_OK) {
             ESP_LOGE(TAG, "read failed at frame %lu", (unsigned long)i);
             goto done;
@@ -141,19 +137,27 @@ static bool play_mjpeg(const esp_partition_t *part, const video_header_t *hdr,
         if (res != JDR_OK) {
             ESP_LOGW(TAG, "frame %lu did not decode (tjpgd %d)", (unsigned long)i, res);
         } else {
-            hub75_blit_rgb565(frame);
+            hub75_blit_rgb888(frame);
         }
+        busy += esp_timer_get_time() - t0;
 
         /* Periodic heartbeat: the achieved rate, whether or not it is keeping
          * up. A late frame does not corrupt anything, it just slows playback,
-         * so without this the difference is invisible. */
+         * so without this the difference is invisible.
+         *
+         * The second number is how much of each frame's budget the decode and
+         * blit actually eat. That is the one that says whether the frame rate
+         * can go up: at 100% there is nothing left and playback starts to
+         * slip, whatever the achieved rate says this second. */
         if ((i % 128) == 127) {
             int64_t now = esp_timer_get_time();
             ESP_LOGI(TAG, "frame %lu/%lu, %.1f fps achieved (%u target), "
-                          "%lld us slack",
+                          "%.1f ms/frame, %.0f%% of budget",
                      (unsigned long)i, (unsigned long)hdr->frames,
-                     128.0e6f / (float)(now - mark), hdr->fps, (long long)(next - now));
+                     128.0e6f / (float)(now - mark), hdr->fps,
+                     busy / 128 / 1000.0f, 100.0f * busy / (float)(now - mark));
             mark = now;
+            busy = 0;
         }
 
         next += period_us;
@@ -170,10 +174,32 @@ done:
     return ok;
 }
 
+static const esp_partition_t *video_partition(void)
+{
+    return esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                    ESP_PARTITION_SUBTYPE_ANY, "video");
+}
+
+bool video_idle(void)
+{
+    return !s_busy;
+}
+
+bool video_info(video_header_t *out)
+{
+    const esp_partition_t *part = video_partition();
+    video_header_t hdr;
+
+    if (!part || esp_partition_read(part, 0, &hdr, sizeof(hdr)) != ESP_OK) return false;
+    if (hdr.magic != VIDEO_MAGIC_RAW && hdr.magic != VIDEO_MAGIC_MJPEG) return false;
+
+    if (out) *out = hdr;
+    return true;
+}
+
 bool video_play(bool loop, bool (*keep_going)(void))
 {
-    const esp_partition_t *part = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "video");
+    const esp_partition_t *part = video_partition();
     if (!part) {
         ESP_LOGW(TAG, "no 'video' partition -- check partitions.csv is selected");
         return false;
@@ -181,7 +207,7 @@ bool video_play(bool loop, bool (*keep_going)(void))
 
     video_header_t hdr;
     if (esp_partition_read(part, 0, &hdr, sizeof(hdr)) != ESP_OK ||
-        (hdr.magic != MAGIC_RAW && hdr.magic != MAGIC_MJPEG)) {
+        (hdr.magic != VIDEO_MAGIC_RAW && hdr.magic != VIDEO_MAGIC_MJPEG)) {
         ESP_LOGW(TAG, "no clip flashed: run tools/encode_video.py, then "
                       "parttool.py write_partition");
         return false;
@@ -193,15 +219,19 @@ bool video_play(bool loop, bool (*keep_going)(void))
     }
 
     ESP_LOGI(TAG, "%s: %lu frames, %ux%u @ %u fps (%.1f s)",
-             hdr.magic == MAGIC_MJPEG ? "mjpeg" : "raw",
+             hdr.magic == VIDEO_MAGIC_MJPEG ? "mjpeg" : "raw",
              (unsigned long)hdr.frames, hdr.width, hdr.height, hdr.fps,
              hdr.frames / (float)hdr.fps);
 
+    /* Held across the whole loop, not per frame: an upload must not erase the
+     * partition between two frames either. */
+    s_busy = true;
+    bool ok;
     do {
-        bool ok = (hdr.magic == MAGIC_MJPEG) ? play_mjpeg(part, &hdr, keep_going)
-                                             : play_raw(part, &hdr, keep_going);
-        if (!ok) return false;
-    } while (loop && (!keep_going || keep_going()));
+        ok = (hdr.magic == VIDEO_MAGIC_MJPEG) ? play_mjpeg(part, &hdr, keep_going)
+                                              : play_raw(part, &hdr, keep_going);
+    } while (ok && loop && (!keep_going || keep_going()));
+    s_busy = false;
 
-    return true;
+    return ok;
 }
