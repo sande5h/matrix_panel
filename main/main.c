@@ -17,7 +17,6 @@
 #include "screen.h"
 #include "server.h"
 #include "update.h"
-#include "stream.h"
 
 static const char *TAG = "main";
 
@@ -280,7 +279,6 @@ void app_main(void)
     /* The server answering is the bar for "this image works". Anything worse
      * than that crash-loops, and the bootloader puts the old slot back. */
     update_confirm();
-    stream_start();
     draw_status("NET OK", net_ip(), 0);
     vTaskDelay(pdMS_TO_TICKS(1500));
 
@@ -307,12 +305,6 @@ void app_main(void)
 
         case SCREEN_UPDATE:
             draw_update();
-            vTaskDelay(pdMS_TO_TICKS(100));
-            break;
-
-        case SCREEN_STREAM:
-            /* The stream task owns the panel while a sender is connected;
-             * drawing anything here would fight it for the buffer. */
             vTaskDelay(pdMS_TO_TICKS(100));
             break;
 

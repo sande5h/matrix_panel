@@ -848,37 +848,6 @@ thing that looked like quality and was not.
 
 ---
 
-## Part 8: skipping the encoder entirely
-
-The panel now takes clips over wifi, but the loop was still encode, upload,
-watch. The last step is to skip both: a TCP listener on 8089 that reads raw
-RGB888 frames and blits them.
-
-The arithmetic is friendlier than it looks. A frame is 24,576 bytes, so 30 fps
-is 5.9 Mbps against the 15-30 Mbps an ESP32-S3 sustains. And it moves the cost
-off the resource that was actually saturated: decoding a JPEG was ~14.7 ms of
-a 16.7 ms budget at 60 fps, while the blit alone is a fraction of that. Trading
-CPU for wifi is trading a resource there is none of for one there is plenty of.
-
-The quality consequence is the interesting part. Every flashed clip has landed
-6-7x the panel's own quantisation floor, because JPEG is the dominant error.
-Streaming has no JPEG, so a streamed frame sits **at** the floor -- better than
-anything that can be flashed, by a wide margin.
-
-Each frame carries a four byte magic word, which is not about corruption: TCP
-does not lose bytes. It catches a sender scaling to the wrong size, which would
-otherwise shift the picture a little further on every frame and read as a
-hardware fault. Testing that mattered more than testing the happy path, so both
-were tested against a mock panel running the same parser: 537 frames with zero
-resyncs on a correct sender, and 19 resyncs in 20 frames on one deliberately
-scaling to 127x64.
-
-`sendall` blocking when the panel falls behind is the whole flow control. No
-queue, no dropped frames, no drift -- the sender simply runs at whatever rate
-the panel can absorb.
-
----
-
 ## The numbers
 
 | | |
@@ -894,8 +863,7 @@ the panel can absorb.
 | Refresh rate | ~488 Hz |
 | CPU cost of refresh | one interrupt per frame |
 | Video | MJPEG 4:2:2 via cjpeg, ROM tjpgd, 30 fps, 11.8 MiB for 105 s |
-| Decode cost | ~9-15 ms/frame; 60 fps fits, with 4:2:2 |
-| Streaming | raw RGB888 over TCP, 5.9 Mbps at 30 fps, no compression error |
+| Decode cost | ~9-15 ms/frame; 60 fps fits, with 4:2:0 |
 | Firmware update | HTTP POST, dual-slot, verified, auto-rollback |
 | Commits | 48 |
 | Dead GPIOs discovered | 2 (one per board, different pins) |

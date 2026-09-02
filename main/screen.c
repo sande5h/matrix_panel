@@ -7,7 +7,7 @@
 
 static const char *TAG = "screen";
 static const char *const NAMES[SCREEN_COUNT] = { "clock", "claude", "nowplaying",
-                                                 "video", "update", "stream" };
+                                                 "video", "update" };
 
 /* A plain volatile int is enough: single word, written by the HTTP task and
  * read by the render loop, with no invariant spanning two fields. */
@@ -27,8 +27,8 @@ void screen_set(screen_t s)
 
 screen_t screen_next(void)
 {
-    /* An upload or a stream has the panel; toggling from either lands on the
-     * clock rather than on whatever follows it in the enum. */
+    /* An upload has the panel; toggling from it lands on the clock rather than
+     * on whatever happens to follow SCREEN_UPDATE in the enum. */
     screen_t from = (s_current >= SCREEN_CYCLE_COUNT) ? SCREEN_VIDEO : s_current;
     screen_set((screen_t)((from + 1) % SCREEN_CYCLE_COUNT));
     return s_current;

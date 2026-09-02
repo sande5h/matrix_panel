@@ -10,7 +10,6 @@
 #include "usage.h"
 #include "nowplaying.h"
 #include "net.h"
-#include "hub75.h"
 #include "update.h"
 
 static const char *TAG = "server";
@@ -126,33 +125,6 @@ static esp_err_t art_post(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* Diagnostic: stops and restarts the DMA refresh, which is the one load on
- * this chip that cannot be reasoned away from the outside -- 48 KiB a frame at
- * 536 Hz is about 25 MB/s of continuous DMA, running whether or not anything
- * is on screen. If inbound throughput changes with the panel dark, that
- * contention is real; if it does not, the refresh is exonerated and the cost
- * is somewhere else. The panel goes black while off. */
-static esp_err_t refresh_get(httpd_req_t *req)
-{
-    char query[32], val[8];
-    bool on = true;
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
-        httpd_query_key_value(query, "on", val, sizeof(val)) == ESP_OK) {
-        on = !(val[0] == '0' || val[0] == 'f' || val[0] == 'n');
-    }
-
-    esp_err_t err = on ? hub75_start() : hub75_stop();
-    /* Already in the requested state is not a failure worth reporting. */
-    if (err == ESP_ERR_INVALID_STATE) err = ESP_OK;
-
-    char body[96];
-    int n = snprintf(body, sizeof(body), "{\"refresh\":%s,\"hz\":%.0f,\"err\":\"%s\"}",
-                     on ? "true" : "false", hub75_refresh_hz(), esp_err_to_name(err));
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, body, n);
-    return ESP_OK;
-}
-
 /* Deliberately small: this is a control panel, not a dashboard. It reads the
  * same JSON the menu bar script does, so the two can never disagree, and it
  * posts the two upload endpoints as raw bodies -- no multipart parser on the
@@ -238,7 +210,6 @@ esp_err_t server_start(void)
         { .uri = "/toggle", .method = HTTP_GET,  .handler = toggle_any },
         { .uri = "/toggle", .method = HTTP_POST, .handler = toggle_any },
         { .uri = "/screen", .method = HTTP_GET,  .handler = screen_get_handler },
-        { .uri = "/refresh", .method = HTTP_GET, .handler = refresh_get },
         { .uri = "/nowplaying", .method = HTTP_POST, .handler = nowplaying_post },
         { .uri = "/nowplaying/art", .method = HTTP_POST, .handler = art_post },
     };
